@@ -1,5 +1,5 @@
 # Totum — Suivi nutritionnel
-# Mobile-friendly + bottom bar : logique métier inchangée
+# Build avec vérif assets + choix de source Excel (packagé / upload) + onglets en haut
 
 from __future__ import annotations
 import os, io, re, json, sqlite3, unicodedata, datetime as dt
@@ -10,21 +10,24 @@ import streamlit as st
 import plotly.graph_objects as go
 import openpyxl
 
+VERSION = "v2025-10-03-check-assets-01"
+
 st.set_page_config(
     page_title="Totum, suivi nutritionnel",
     page_icon="🥗",
     layout="wide",
-    initial_sidebar_state="collapsed"
+    initial_sidebar_state="expanded"
 )
 
 DB_PATH = os.path.join(os.getcwd(), "totum.db")
 
-# === Assets par défaut (logo + Excel packagé) ===
+# === Assets packagés (logo + Excel)
 ASSETS_DIR = Path(__file__).parent / "assets"
 DEFAULT_EXCEL_PATH = ASSETS_DIR / "TOTUM-Suivi nutritionnel.xlsx"
 DEFAULT_LOGO_PATH  = ASSETS_DIR / "logo.png"
 
 # ============ Utils ============
+import unicodedata
 def strip_accents(text: str) -> str:
     text = str(text or "")
     return "".join(ch for ch in unicodedata.normalize("NFD", text) if unicodedata.category(ch) != "Mn")
@@ -177,20 +180,19 @@ COLORS = {
     "bad":       "#d9534f",
 }
 
-# ============ Mobile UI helpers ============
+# ============ Mobile UI helpers (on garde les cases pour la taille/compactage) ============
 def apply_mobile_css(is_mobile: bool, ultra: bool):
     scale = 0.95 if is_mobile else 1.0
     st.markdown(f"<style>:root{{--totum-scale:{scale};}}</style>", unsafe_allow_html=True)
     st.markdown(f"""
     <style>
     html, body, [data-testid="stAppViewContainer"] {{ font-size: calc(16px * var(--totum-scale)); }}
-    .block-container {{ padding-top: {0.5 if ultra else 0.6}rem; padding-bottom: {0.5 if ultra else 0.6}rem; }}
+    .block-container {{ padding-top: {0.6 if ultra else 0.8}rem; padding-bottom: {0.6 if ultra else 0.8}rem; }}
     h1, h2, h3 {{ line-height: 1.15; margin: 0.15rem 0 0.5rem 0; }}
     .stPlotlyChart {{ height: auto; }}
     [data-testid="stDataFrame"] div {{ font-size: {0.92 if ultra else 0.95}em; }}
     .stRadio, .stSelectbox, .stNumberInput, .stDateInput {{ margin-bottom: 0.2rem !important; }}
     .donut-title {{ font-size: {13 if ultra else 14}px; font-weight: 600; margin-bottom: 0.15rem; }}
-    .bottom-bar {{ padding: .45rem .6rem; border-top: 1px solid #ddd; background: #fff; }}
     </style>
     """, unsafe_allow_html=True)
 
@@ -264,7 +266,7 @@ def unify_totals_series(s: pd.Series) -> pd.Series:
         out["Énergie_kcal"] = out["Energie_kcal"]
     return out
 
-# ============ Profil / objectifs (Excel-like) ============
+# ============ Profil / objectifs ============
 def bmr_harris_benedict_revised(sex, age, height_cm, weight_kg):
     if norm(sex).startswith("h"):  # homme
         return 88.362 + 13.397*float(weight_kg) + 4.799*float(height_cm) - 5.677*int(age)
@@ -463,31 +465,34 @@ if "foods" not in st.session_state: st.session_state["foods"] = pd.DataFrame(col
 if "targets_micro" not in st.session_state: st.session_state["targets_micro"] = pd.DataFrame()
 if "targets_macro" not in st.session_state: st.session_state["targets_macro"] = pd.DataFrame()
 if "logo_bytes" not in st.session_state: st.session_state["logo_bytes"] = None
+if "logo_source" not in st.session_state: st.session_state["logo_source"] = "default"  # default|upload
 if "profile" not in st.session_state: st.session_state["profile"] = load_profile()
 if "last_added_date" not in st.session_state: st.session_state["last_added_date"] = None
 if "profile_targets" not in st.session_state: st.session_state["profile_targets"] = get_profile_targets_cached()
 if "mobile" not in st.session_state: st.session_state["mobile"] = False
 if "ultra" not in st.session_state: st.session_state["ultra"] = False
-if "active_page" not in st.session_state: st.session_state["active_page"] = "Bilan"  # défaut mobile
 
-# -- NEW: charge logo par défaut AVANT le header (sinon il n'apparaît pas au 1er rendu)
-if st.session_state["logo_bytes"] is None and DEFAULT_LOGO_PATH.exists():
-    try:
+# -- Logo : recharge automatiquement si source = default
+def _reload_default_logo():
+    if DEFAULT_LOGO_PATH.exists():
         st.session_state["logo_bytes"] = DEFAULT_LOGO_PATH.read_bytes()
-    except Exception:
-        pass
+        st.session_state["logo_source"] = "default"
+
+if st.session_state["logo_source"] == "default":
+    _reload_default_logo()
 
 # ============ Header ============
 left, mid, right = st.columns([1,6,4])
 with left:
     if st.session_state["logo_bytes"]:
-        st.image(st.session_state["logo_bytes"], width=80)  # 80px pour meilleure visibilité
+        st.image(st.session_state["logo_bytes"], width=80)
 with mid:
     st.title("Totum — suivi nutritionnel")
+    st.caption(f"Build {VERSION}")
 with right:
     c1, c2 = st.columns(2)
     with c1:
-        st.session_state["mobile"] = st.checkbox("📱 Mobile", value=st.session_state["mobile"], key="ck_mobile")
+        st.session_state["mobile"] = st.checkbox("📱 Taille police compacte", value=st.session_state["mobile"], key="ck_mobile")
     with c2:
         st.session_state["ultra"] = st.checkbox("📱 Ultra-compact (2 col.)", value=st.session_state["ultra"], key="ck_ultra")
     if st.button("💾 Sauver profil & journal"):
@@ -498,15 +503,37 @@ MOBILE = st.session_state["mobile"]
 ULTRA  = st.session_state["ultra"]
 apply_mobile_css(MOBILE, ULTRA)
 
-# ============ Import Excel & Logo (sidebar) ============
+# ============ Sidebar : logo + source Excel + état des assets ============
 with st.sidebar:
-    st.header("📥 Import Excel")
-    # (logo déjà chargé par défaut au dessus)
+    st.header("📥 Fichiers & source des données")
+
+    # État des assets packagés (diagnostic simple)
+    colA, colB = st.columns(2)
+    with colA:
+        st.metric("Logo packagé", "✅" if DEFAULT_LOGO_PATH.exists() else "❌")
+    with colB:
+        st.metric("Excel packagé", "✅" if DEFAULT_EXCEL_PATH.exists() else "❌")
+
+    # Choix logo : upload ou par défaut (assets)
     logo_upl = st.file_uploader("Logo TOTUM (PNG/JPG)", type=["png","jpg","jpeg"])
     if logo_upl is not None:
         st.session_state["logo_bytes"] = logo_upl.read()
+        st.session_state["logo_source"] = "upload"
+        st.success("Logo chargé (session).")
+    if st.button("♻️ Recharger le logo par défaut"):
+        _reload_default_logo()
+        st.success("Logo par défaut rechargé.")
+        st.rerun()
 
-    upl = st.file_uploader("Fichier TOTUM-Suivi nutritionnel.xlsx", type=["xlsx"])
+    st.divider()
+
+    # Choix de la source pour la Liste/Cibles
+    data_src = st.radio(
+        "Source des données (Liste + Cibles)",
+        options=["Excel packagé (assets)", "Fichier uploadé"],
+        index=0 if DEFAULT_EXCEL_PATH.exists() else 1,
+        help="Excel packagé = assets/TOTUM-Suivi nutritionnel.xlsx dans le repo GitHub"
+    )
 
     def _load_all_from_excel(reader_func, src):
         df_liste = reader_func(src, "Liste")
@@ -529,15 +556,18 @@ with st.sidebar:
             keep = [c for c in ["Nutriment","Icône","Fonction","Bénéfice Santé","Objectif"] if c in tmac.columns]
             st.session_state["targets_macro"] = tmac[keep]
 
-    if upl:
-        _load_all_from_excel(read_sheet_values, upl)
+    if data_src == "Fichier uploadé":
+        upl = st.file_uploader("Charger votre Excel TOTUM (.xlsx)", type=["xlsx"])
+        if upl:
+            _load_all_from_excel(read_sheet_values, upl)
     else:
         if DEFAULT_EXCEL_PATH.exists():
             _load_all_from_excel(read_sheet_values_path, DEFAULT_EXCEL_PATH)
+            st.info("Source: Excel packagé (assets).")
         else:
-            st.info("Aucun fichier par défaut détecté. Uploadez votre Excel ou ajoutez-le dans assets/.")
+            st.error("Excel packagé introuvable. Placez-le dans assets/TOTUM-Suivi nutritionnel.xlsx (casse exacte).")
 
-# ==================== Contenu des 3 pages (factorisé) ====================
+# ==================== Pages (identiques au moteur existant) ====================
 def render_profile_page():
     st.subheader("Profil")
     p = st.session_state["profile"]
@@ -619,6 +649,16 @@ def render_journal_page():
             st.success(f"Ligne #{sel_id} supprimée.")
             st.rerun()
 
+def unify_totals_for_date(date_iso: str) -> pd.Series:
+    df_today = fetch_journal_by_date(date_iso)
+    if not df_today.empty:
+        base_exclude = ["id","date","repas","nom","quantite_g"]
+        df_clean = drop_parasite_columns(df_today)
+        df_num = df_clean.drop(columns=[c for c in base_exclude if c in df_clean.columns], errors="ignore")
+        raw = df_num.sum(numeric_only=True)
+        return unify_totals_series(raw)
+    return pd.Series(dtype=float)
+
 def render_bilan_page():
     st.subheader("Bilan")
     default_bilan_date = dt.date.today()
@@ -633,19 +673,11 @@ def render_bilan_page():
             default_bilan_date = pd.to_datetime(last_with).date()
 
     date_bilan = st.date_input("Date", value=default_bilan_date, format="DD/MM/YYYY", key="date_bilan")
-    df_today = fetch_journal_by_date(date_bilan.isoformat())
-
-    if not df_today.empty:
-        base_exclude = ["id","date","repas","nom","quantite_g"]
-        df_clean = drop_parasite_columns(df_today)
-        df_num = df_clean.drop(columns=[c for c in base_exclude if c in df_clean.columns], errors="ignore")
-        raw = df_num.sum(numeric_only=True)
-        totals = unify_totals_series(raw)
-    else:
-        totals = pd.Series(dtype=float)
+    totals = unify_totals_for_date(date_bilan.isoformat())
 
     targets_macro = st.session_state["targets_macro"].copy()
     targets_micro = st.session_state["targets_micro"].copy()
+    profile_targets = st.session_state.get("profile_targets", get_profile_targets_cached())
 
     MACRO_KEYS = {
         "Énergie":   ["Énergie_kcal","Energie_kcal","kcal","energie_kcal"],
@@ -737,7 +769,6 @@ def render_bilan_page():
         if "Objectif" not in df.columns: df["Objectif"] = np.nan
 
         def excel_objective_for_row(nutr_label: str) -> float | None:
-            xlt = excel_like_targets(st.session_state["profile"])
             base = macro_base_name(str(nutr_label))
             if base == "energie":   return xlt["energie_kcal"]
             if base == "lipides":   return xlt["lipides_g"]
@@ -756,11 +787,10 @@ def render_bilan_page():
 
         df["Objectif"] = df["Nutriment"].apply(lambda n: excel_objective_for_row(str(n)) if str(n) else np.nan)
 
+        # Copie exacte depuis Profil pour Oméga-3 (objectif ALA)
         profile_targets = st.session_state.get("profile_targets", get_profile_targets_cached())
         is_ala_row = df["Nutriment"].apply(lambda n: macro_base_name(str(n)) == "ala")
-        omega3_from_profile = float(profile_targets.get("ala_w3_g", 0.0))
-        if omega3_from_profile <= 0:
-            omega3_from_profile = excel_like_targets(st.session_state["profile"])["ala_w3_g"]
+        omega3_from_profile = float(profile_targets.get("ala_w3_g", xlt["ala_w3_g"]))
         df.loc[is_ala_row, "Objectif"] = omega3_from_profile
 
         df["Consommée"] = df["Nutriment"].apply(consumed_value_for)
@@ -832,7 +862,6 @@ def render_bilan_page():
     dha_c,dha_t= donut_vals("dha",    macros_df, xlt["dha_g"])
     la_c, la_t = donut_vals("omega6", macros_df, xlt["omega6_g"])
     o9_c, o9_t = donut_vals("omega9", macros_df, xlt["omega9_g"])
-
     title_omega3 = short_title("Oméga-3 (objectif ALA) (g)", "Oméga-3 (ALA)", st.session_state["mobile"])
     render_donuts_grid([
         {"title": title_omega3, "cons": a_c,   "target": a_t,   "color":"omega3"},
@@ -918,35 +947,11 @@ def render_bilan_page():
     else:
         st.caption("Aucune ligne sur cette date. Ajoute des aliments dans l’onglet Journal.")
 
-# ==================== Rendu : Desktop (onglets) vs Mobile (barre) ====================
-def bottom_bar():
-    st.markdown("<div class='bottom-bar'></div>", unsafe_allow_html=True)
-    bb = st.container()
-    with bb:
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            if st.button(("🧍 Profil" if st.session_state["active_page"]!="Profil" else "✅ Profil"), use_container_width=True):
-                st.session_state["active_page"] = "Profil"; st.rerun()
-        with c2:
-            if st.button(("🧾 Journal" if st.session_state["active_page"]!="Journal" else "✅ Journal"), use_container_width=True):
-                st.session_state["active_page"] = "Journal"; st.rerun()
-        with c3:
-            if st.button(("📊 Bilan" if st.session_state["active_page"]!="Bilan" else "✅ Bilan"), use_container_width=True):
-                st.session_state["active_page"] = "Bilan"; st.rerun()
-
-if not MOBILE:
-    # Mode desktop : on garde les 3 onglets classiques
-    tab_profile, tab_journal, tab_bilan = st.tabs(["👤 Profil", "🧾 Journal", "📊 Bilan"])
-    with tab_profile: render_profile_page()
-    with tab_journal: render_journal_page()
-    with tab_bilan:   render_bilan_page()
-else:
-    # Mode mobile : une seule page + barre en bas
-    page = st.session_state["active_page"]
-    if page == "Profil": render_profile_page()
-    elif page == "Journal": render_journal_page()
-    else: render_bilan_page()
-    bottom_bar()
+# ============ Onglets en haut ============
+tab_profile, tab_journal, tab_bilan = st.tabs(["👤 Profil", "🧾 Journal", "📊 Bilan"])
+with tab_profile: render_profile_page()
+with tab_journal: render_journal_page()
+with tab_bilan:   render_bilan_page()
 
 # ============ Export/Import journal ============
 st.markdown("### 💾 Export / Import")
@@ -1004,6 +1009,15 @@ with cI:
 
 # ============ Diagnostic ============
 with st.expander("🛠️ Diagnostic (ouvrir seulement si besoin)"):
+    st.write("Working dir:", os.getcwd())
+    st.write("Assets dir:", str(ASSETS_DIR), "exists:", ASSETS_DIR.exists())
+    try:
+        st.write("Assets list:", os.listdir(ASSETS_DIR) if ASSETS_DIR.exists() else "—")
+    except Exception as e:
+        st.write("Assets list error:", e)
+    st.write("DEFAULT_LOGO_PATH:", str(DEFAULT_LOGO_PATH), "exists:", DEFAULT_LOGO_PATH.exists())
+    st.write("DEFAULT_EXCEL_PATH:", str(DEFAULT_EXCEL_PATH), "exists:", DEFAULT_EXCEL_PATH.exists())
+
     foods = st.session_state["foods"]
     st.write("Colonnes Liste (foods) :", list(foods.columns)[:30], "…")
     if not foods.empty:
