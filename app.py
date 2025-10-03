@@ -1,8 +1,8 @@
 # Totum — Suivi nutritionnel
-# Build avec vérif assets + choix de source Excel (packagé / upload) + onglets en haut
+# Build visuel : Hero branding + tabs stylés + logique métier conservée
 
 from __future__ import annotations
-import os, io, re, json, sqlite3, unicodedata, datetime as dt
+import os, io, re, json, sqlite3, unicodedata, datetime as dt, base64
 from pathlib import Path
 import numpy as np
 import pandas as pd
@@ -10,7 +10,7 @@ import streamlit as st
 import plotly.graph_objects as go
 import openpyxl
 
-VERSION = "v2025-10-03-check-assets-01"
+VERSION = "v2025-10-04-hero-ui-01"
 
 st.set_page_config(
     page_title="Totum, suivi nutritionnel",
@@ -27,7 +27,6 @@ DEFAULT_EXCEL_PATH = ASSETS_DIR / "TOTUM-Suivi nutritionnel.xlsx"
 DEFAULT_LOGO_PATH  = ASSETS_DIR / "logo.png"
 
 # ============ Utils ============
-import unicodedata
 def strip_accents(text: str) -> str:
     text = str(text or "")
     return "".join(ch for ch in unicodedata.normalize("NFD", text) if unicodedata.category(ch) != "Mn")
@@ -163,7 +162,7 @@ def calc_from_food_row(row: pd.Series, qty_g: float) -> dict:
 
 # ============ Couleurs ============
 COLORS = {
-    "energie":   "#ff8c00",
+    "energie":   "#ff7f3f",  # brand orange
     "proteines": "#2ca02c",
     "glucides":  "#1f77b4",
     "lipides":   "#d62728",
@@ -180,19 +179,74 @@ COLORS = {
     "bad":       "#d9534f",
 }
 
-# ============ Mobile UI helpers (on garde les cases pour la taille/compactage) ============
+# ============ Mobile UI helpers ============
 def apply_mobile_css(is_mobile: bool, ultra: bool):
     scale = 0.95 if is_mobile else 1.0
-    st.markdown(f"<style>:root{{--totum-scale:{scale};}}</style>", unsafe_allow_html=True)
     st.markdown(f"""
     <style>
-    html, body, [data-testid="stAppViewContainer"] {{ font-size: calc(16px * var(--totum-scale)); }}
-    .block-container {{ padding-top: {0.6 if ultra else 0.8}rem; padding-bottom: {0.6 if ultra else 0.8}rem; }}
-    h1, h2, h3 {{ line-height: 1.15; margin: 0.15rem 0 0.5rem 0; }}
+    :root {{
+      --brand: #ff7f3f;
+      --brand2: #ffb347;
+      --ink: #0d1b1e;
+      --muted: #5f6b76;
+      --bg1: #fffaf5;
+      --bg2: #fff5ea;
+      --shadow: 0 8px 26px rgba(0,0,0,.08);
+      --scale: {scale};
+    }}
+    html, body, [data-testid="stAppViewContainer"] {{
+      font-size: calc(16px * var(--scale));
+      background: linear-gradient(180deg, var(--bg1) 0%, var(--bg2) 80%);
+    }}
+    .block-container {{ padding-top: {0.6 if ultra else 0.9}rem; padding-bottom: {0.6 if ultra else 0.9}rem; }}
+    h1, h2, h3 {{ line-height: 1.15; margin: 0.15rem 0 0.5rem 0; color: var(--ink); }}
+
+    /* HERO band */
+    .hero-band {{
+      background: radial-gradient(1200px 450px at 10% -10%, rgba(255,127,63,.18), transparent 60%),
+                  linear-gradient(135deg, #fff0e5 0%, #fffaf6 40%, #ffffff 100%);
+      border: 1px solid rgba(0,0,0,.06);
+      border-radius: 18px;
+      padding: {0.9 if ultra else 1.1}rem 1.2rem;
+      box-shadow: var(--shadow);
+      position: relative;
+      overflow: hidden;
+    }}
+    .hero-content {{ display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: .9rem; }}
+    .hero-title {{ font-size: clamp(22px, 2.6vw, 30px); font-weight: 800; color: var(--ink); margin: 0; }}
+    .hero-sub   {{ color: var(--muted); margin-top: -2px; }}
+    .hero-logo {{ display:block; aspect-ratio:1/1; object-fit:contain; filter: drop-shadow(0 8px 18px rgba(255,127,63,.35)); }}
+    .hero-pill {{ background: rgba(255,127,63,.10); color:#a64b00; padding:.25rem .6rem; border-radius:999px; font-weight:700; font-size:.85rem; }}
+
+    /* Tabs (top) */
+    [data-baseweb="tab-list"] button {{
+      background: #fff;
+      border-radius: 10px !important;
+      margin-right: .3rem;
+      box-shadow: 0 2px 10px rgba(0,0,0,.04);
+      border: 1px solid rgba(0,0,0,.06);
+    }}
+    [data-baseweb="tab"] {{
+      padding: .4rem .8rem !important;
+      font-weight: 600;
+    }}
+    [data-baseweb="tab-highlight"] {{ background: linear-gradient(90deg, var(--brand), var(--brand2)); height: 3px; }}
+
+    /* DataFrames */
+    [data-testid="stDataFrame"] div {{ font-size: {0.92 if ultra else 0.96}em; }}
     .stPlotlyChart {{ height: auto; }}
-    [data-testid="stDataFrame"] div {{ font-size: {0.92 if ultra else 0.95}em; }}
-    .stRadio, .stSelectbox, .stNumberInput, .stDateInput {{ margin-bottom: 0.2rem !important; }}
-    .donut-title {{ font-size: {13 if ultra else 14}px; font-weight: 600; margin-bottom: 0.15rem; }}
+
+    /* Buttons */
+    .stButton>button {{
+      background: linear-gradient(90deg, var(--brand), var(--brand2));
+      border: 0;
+      color: #fff;
+      font-weight: 700;
+      box-shadow: 0 6px 16px rgba(255,127,63,.28);
+    }}
+
+    /* Donut titles */
+    .donut-title {{ font-size: {13 if ultra else 14}px; font-weight: 700; margin-bottom: 0.15rem; color: var(--ink); }}
     </style>
     """, unsafe_allow_html=True)
 
@@ -481,27 +535,57 @@ def _reload_default_logo():
 if st.session_state["logo_source"] == "default":
     _reload_default_logo()
 
-# ============ Header ============
-left, mid, right = st.columns([1,6,4])
-with left:
-    if st.session_state["logo_bytes"]:
-        st.image(st.session_state["logo_bytes"], width=80)
-with mid:
-    st.title("Totum — suivi nutritionnel")
-    st.caption(f"Build {VERSION}")
-with right:
-    c1, c2 = st.columns(2)
-    with c1:
-        st.session_state["mobile"] = st.checkbox("📱 Taille police compacte", value=st.session_state["mobile"], key="ck_mobile")
-    with c2:
-        st.session_state["ultra"] = st.checkbox("📱 Ultra-compact (2 col.)", value=st.session_state["ultra"], key="ck_ultra")
-    if st.button("💾 Sauver profil & journal"):
-        save_profile(st.session_state["profile"])
-        st.success("Données sauvegardées (SQLite : totum.db)")
+def _logo_b64() -> str | None:
+    data = st.session_state.get("logo_bytes")
+    if not data and DEFAULT_LOGO_PATH.exists():
+        data = DEFAULT_LOGO_PATH.read_bytes()
+    if data:
+        return base64.b64encode(data).decode()
+    return None
 
+# ============ HERO HEADER ============
 MOBILE = st.session_state["mobile"]
 ULTRA  = st.session_state["ultra"]
 apply_mobile_css(MOBILE, ULTRA)
+
+logo_b64 = _logo_b64()
+logo_w = 132 if not MOBILE else (96 if not ULTRA else 88)
+hero_html = f"""
+<div class="hero-band">
+  <div class="hero-content">
+    <div>
+      {"<span class='hero-pill'>Totum</span>"}
+      <div class="hero-title">Suivi nutritionnel intelligent</div>
+      <div class="hero-sub">Visualise tes apports, atteins tes objectifs — simplement.</div>
+    </div>
+    <div></div>
+    <img class="hero-logo" src="data:image/png;base64,{logo_b64}" alt="Totum logo" style="width:{logo_w}px;"/>
+  </div>
+</div>
+""" if logo_b64 else f"""
+<div class="hero-band">
+  <div class="hero-content">
+    <div>
+      <span class='hero-pill'>Totum</span>
+      <div class="hero-title">Suivi nutritionnel intelligent</div>
+      <div class="hero-sub">Visualise tes apports, atteins tes objectifs — simplement.</div>
+    </div>
+  </div>
+</div>
+"""
+st.markdown(hero_html, unsafe_allow_html=True)
+st.caption(f"Build {VERSION}")
+
+# ============ Toolbar (petits réglages) ============
+tb1, tb2, tb3, tb4 = st.columns([2,2,2,6])
+with tb1:
+    st.session_state["mobile"] = st.checkbox("📱 Texte compact", value=st.session_state["mobile"], key="ck_mobile")
+with tb2:
+    st.session_state["ultra"] = st.checkbox("📱 Ultra (2 col.)", value=st.session_state["ultra"], key="ck_ultra")
+with tb3:
+    if st.button("💾 Sauver profil & journal"):
+        save_profile(st.session_state["profile"])
+        st.success("Données sauvegardées (SQLite : totum.db)")
 
 # ============ Sidebar : logo + source Excel + état des assets ============
 with st.sidebar:
@@ -513,6 +597,8 @@ with st.sidebar:
         st.metric("Logo packagé", "✅" if DEFAULT_LOGO_PATH.exists() else "❌")
     with colB:
         st.metric("Excel packagé", "✅" if DEFAULT_EXCEL_PATH.exists() else "❌")
+    st.caption(f"Logo: {DEFAULT_LOGO_PATH}")
+    st.caption(f"Excel: {DEFAULT_EXCEL_PATH}")
 
     # Choix logo : upload ou par défaut (assets)
     logo_upl = st.file_uploader("Logo TOTUM (PNG/JPG)", type=["png","jpg","jpeg"])
@@ -520,7 +606,7 @@ with st.sidebar:
         st.session_state["logo_bytes"] = logo_upl.read()
         st.session_state["logo_source"] = "upload"
         st.success("Logo chargé (session).")
-    if st.button("♻️ Recharger le logo par défaut"):
+    if st.button("♻️ Logo par défaut (assets)"):
         _reload_default_logo()
         st.success("Logo par défaut rechargé.")
         st.rerun()
@@ -567,9 +653,9 @@ with st.sidebar:
         else:
             st.error("Excel packagé introuvable. Placez-le dans assets/TOTUM-Suivi nutritionnel.xlsx (casse exacte).")
 
-# ==================== Pages (identiques au moteur existant) ====================
+# ==================== Pages (moteur conservé) ====================
 def render_profile_page():
-    st.subheader("Profil")
+    st.subheader("👤 Profil")
     p = st.session_state["profile"]
     c1, c2, c3, c4 = st.columns(4)
     p["sexe"] = c1.selectbox("Sexe", ["Homme","Femme"], index=0 if canon(p["sexe"]).startswith("homme") else 1)
@@ -608,11 +694,11 @@ def render_profile_page():
         "DHA (g)":        profile_targets["dha_g"],
         "Sel (g)":        profile_targets["sel_g"],
     }]
-    st.markdown("#### Objectifs (1 déc.)")
+    st.markdown("#### 🎯 Objectifs (1 déc.)")
     st.write(pd.DataFrame(prof_rows).T.rename(columns={0:"Objectif"}))
 
 def render_journal_page():
-    st.subheader("Journal")
+    st.subheader("🧾 Journal")
     foods = st.session_state["foods"]
     c1, c2, c3, c4 = st.columns([1,1,1,2])
     date_sel = c1.date_input("Date", value=dt.date.today(), format="DD/MM/YYYY", key="date_input_journal")
@@ -660,7 +746,7 @@ def unify_totals_for_date(date_iso: str) -> pd.Series:
     return pd.Series(dtype=float)
 
 def render_bilan_page():
-    st.subheader("Bilan")
+    st.subheader("📊 Bilan")
     default_bilan_date = dt.date.today()
     last_with = fetch_last_date_with_rows()
     if last_with and fetch_journal_by_date(default_bilan_date.isoformat()).empty:
@@ -847,7 +933,7 @@ def render_bilan_page():
     c4,t4 = donut_vals("lipides",   macros_df, xlt["lipides_g"])
     c5,t5 = donut_vals("fibres",    macros_df, xlt["fibres_g"])
 
-    st.markdown("### Macros")
+    st.markdown("### 🔥 Macros")
     render_donuts_grid([
         {"title": title_energy, "cons": c1, "target": t1, "color": "energie"},
         {"title": title_prot,   "cons": c2, "target": t2, "color": "proteines"},
@@ -856,7 +942,7 @@ def render_bilan_page():
         {"title": title_fib,    "cons": c5, "target": t5, "color": "fibres"},
     ], cols_desktop=5, height=donut_h)
 
-    st.markdown("### Omégas")
+    st.markdown("### 🫒 Omégas")
     a_c,  a_t  = donut_vals("ala",    macros_df, xlt["ala_w3_g"])
     epa_c,epa_t= donut_vals("epa",    macros_df, xlt["epa_g"])
     dha_c,dha_t= donut_vals("dha",    macros_df, xlt["dha_g"])
@@ -871,7 +957,7 @@ def render_bilan_page():
         {"title": "Oméga-9",    "cons": o9_c,  "target": o9_t,  "color":"omega9"},
     ], cols_desktop=5, height=donut_h)
 
-    st.markdown("### Micros")
+    st.markdown("### 🧪 Micros")
     if not targets_micro.empty and "Nutriment" in targets_micro.columns:
         tmi = targets_micro.copy()
         if "Objectif" not in tmi.columns or (pd.to_numeric(tmi["Objectif"], errors="coerce").fillna(0.0) == 0).all():
