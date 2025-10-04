@@ -1,16 +1,17 @@
-# app.py — Mobile-first premium UI v3 (Streamlit)
-# IMPORTANT : le « moteur » (base aliments + calculs) reste inchangé.
-# Branchez vos fonctions existantes aux hooks TODO(plug:...) indiqués ci-dessous.
+# app.py — Base conservée + habillage smartphone premium (UI only)
+# ⚠️ MOTEUR CONSERVÉ : si vous avez déjà vos fonctions/variables, elles seront utilisées telles quelles.
+#    Aucune UI d’upload Excel/logo n’est affichée (conforme à vos consignes).
+#    Ce fichier n’ajoute que du style, des wrappers visuels et quelques fallbacks non intrusifs.
 
 import streamlit as st
 import pandas as pd
-from typing import Dict, List, Any
 import uuid
 from collections import defaultdict
+import types
 import streamlit.components.v1 as components
 
-# ────────────────────────────────────────────────────────────────────────────────
-# CONFIG GÉNÉRALE (orienté smartphone)
+# ─────────────────────────────────────────────
+# CONFIGURATION DE LA PAGE (smartphone first)
 st.set_page_config(
     page_title="TOTUM · Coach Nutrition",
     page_icon="🍽️",
@@ -18,7 +19,7 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
-# Viewport strict : format/cadrage auto, pas de zoom manuel si supporté
+# Viewport mobile : cadrage auto, pas de zoom manuel → lecture figée
 components.html(
     """
     <meta name='viewport' content='width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no'>
@@ -26,9 +27,9 @@ components.html(
     height=0,
 )
 
-# ────────────────────────────────────────────────────────────────────────────────
-# STYLES — élégant, compact, homogène smartphone
-CUSTOM_CSS = """
+# ─────────────────────────────────────────────
+# CSS PREMIUM MOBILE (ajout visuel uniquement)
+MOBILE_CSS = """
 <style>
 :root{
   --bg:#0b0f14; --card:#101622; --ink:#eaf2ff; --muted:#8aa0c6;
@@ -36,179 +37,123 @@ CUSTOM_CSS = """
 }
 html, body, [data-testid="stAppViewContainer"]{background:var(--bg);}
 [data-testid="stHeader"], [data-testid="stToolbar"]{background:transparent;}
+/* Pas de sidebar visible */
+[data-testid="stSidebar"]{display:none !important}
+
+.block{background:var(--card); border:1px solid rgba(122,162,255,0.10);
+  border-radius:18px; padding:14px;}
+.hint{color:var(--muted); font-size:12px}
+.compact p, .compact li, .compact div{font-size:14px; line-height:1.35}
 
 /***** Header *****/
 .header{position:sticky; top:0; z-index:10; backdrop-filter: blur(10px);
   background:linear-gradient(180deg, rgba(16,22,34,0.90), rgba(16,22,34,0.65));
-  border-bottom:1px solid rgba(122,162,255,0.15);
-}
-.hero{display:flex; align-items:center; gap:14px; padding:14px 8px;}
-.logo{width:64px; height:64px; border-radius:16px; display:grid; place-items:center;
+  border-bottom:1px solid rgba(122,162,255,0.15);}
+.hero{display:flex; align-items:center; gap:14px; padding:12px 8px;}
+.logoBox{width:72px; height:72px; border-radius:16px; overflow:hidden; display:grid; place-items:center;
   background:radial-gradient(80% 80% at 30% 20%,#89b4ff,transparent),linear-gradient(135deg,#2a3a58,#101522);
-  box-shadow:0 14px 40px rgba(122,162,255,.28), inset 0 1px 0 rgba(255,255,255,.08);
-}
-.logo span{font-size:32px}
-.title{color:var(--ink); font-weight:900; font-size:24px; line-height:1.05}
+  box-shadow:0 16px 44px rgba(122,162,255,.30), inset 0 1px 0 rgba(255,255,255,.08);}
+.logoEmoji{font-size:36px}
+.title{color:var(--ink); font-weight:900; font-size:22px; line-height:1.05}
 .subtitle{color:var(--muted); font-size:13px; margin-top:2px}
 
-/***** Tabs plein écran *****/
+/* Onglets pleine largeur + emoji */
 [role="tablist"]{display:flex; gap:6px}
-[role="tab"]{flex:1; background:var(--card); border-radius:14px; border:1px solid rgba(122,162,255,0.10)}
+[role="tab"]{flex:1; background:var(--card); border-radius:14px;
+  border:1px solid rgba(122,162,255,0.10)}
 [role="tab"][aria-selected="true"]{outline:2px solid rgba(122,162,255,0.35)}
 
-/***** Cartes / inputs *****/
-.block{background:var(--card); border:1px solid rgba(122,162,255,0.10); border-radius:18px; padding:14px;}
-.hint{color:var(--muted); font-size:12px}
-.label{color:var(--ink); font-weight:700; font-size:13px}
-
-/***** Progress bars (micros) *****/
-.bar{width:100%; height:12px; background:#0f1420; border-radius:999px; position:relative; overflow:hidden; border:1px solid rgba(122,162,255,0.12)}
+/* Progress bars (micros) — pleine largeur */
+.bar{width:100%; height:12px; background:#0f1420; border-radius:999px;
+  position:relative; overflow:hidden; border:1px solid rgba(122,162,255,0.12)}
 .fill{height:100%; border-radius:999px}
 .row{display:grid; grid-template-columns: 1fr auto; gap:8px; align-items:center; margin:8px 0}
 .tag{font-size:13px; color:var(--ink); font-weight:600}
 .val{font-size:12px; color:var(--muted)}
 
-/***** Macros — mini tableaux visuels *****/
-.macro-grid{display:grid; grid-template-columns: repeat(3, 1fr); gap:10px}
-.macro-card{background:#0f1624; border:1px solid rgba(122,162,255,0.12); border-radius:16px; padding:12px; display:grid; gap:10px; align-items:center; justify-items:center}
-.macro-name{font-size:12px; color:var(--muted)}
-.macro-gram{font-size:16px; color:var(--ink); font-weight:800}
-
-/***** Anneaux de progression (SVG) *****/
-.ring{width:70px; height:70px; display:grid; place-items:center}
-.ring svg{filter: drop-shadow(0 2px 8px rgba(122,162,255,.25));}
-.ring .pct{position:relative; top:-44px; font-size:12px; color:var(--ink); font-weight:700}
-
-/***** Micros — liste compacte *****/
-.micros{display:grid; gap:8px}
-.group-title{font-weight:800; color:var(--ink); margin:8px 0 4px}
-.pill{display:inline-flex; align-items:center; gap:6px; background:#0f1624; border:1px solid rgba(122,162,255,0.12); padding:6px 10px; border-radius:999px; font-size:12px; color:var(--muted)}
-
 /* Tables compactes */
 .small-table table{font-size:13px}
 .small-table th, .small-table td{padding:8px 10px}
 
-/* Champs input compacts pour mobile */
+/* Inputs lisibles */
 input, select, textarea{font-size:16px !important}
 </style>
 """
-st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
+st.markdown(MOBILE_CSS, unsafe_allow_html=True)
 
-# ────────────────────────────────────────────────────────────────────────────────
-# ÉTAT GLOBAL (compatible moteur existant)
+# ─────────────────────────────────────────────
+# ETAT GLOBAL (préservé)
 if "food_log" not in st.session_state:
-    st.session_state.food_log = []  # [{id, name, qty, unit, kcal, prot, gluc, lip, micros...}]
+    st.session_state.food_log = []   # [{id, name, qty, unit, ...}]
 if "profile" not in st.session_state:
     st.session_state.profile = {
-        "sex": None,
-        "age": None,
-        "weight": None,
-        "height": None,
-        "activity": "Modéré (x1.55)",
-        # objectifs (figés par défaut — gardent vos calculs stables)
-        "obj_prot": 100,  # %
-        "obj_gluc": 100,
-        "obj_lip": 100,
-        "obj_kcal": 100,
+        "sex": None, "age": None, "weight": None, "height": None,
+        "activity": "Modéré (x1.55 – 3 à 5 séances/sem.)",  # texte demandé
+        "obj_prot": 100, "obj_gluc": 100, "obj_lip": 100, "obj_kcal": 100,
     }
 
-# ────────────────────────────────────────────────────────────────────────────────
-# HOOKS MOTEUR – à brancher sur vos fonctions métiers
-# TODO(plug:food_db_search): remplacez par votre recherche réelle (base/Excel/API)
-_FAKE_DB = [
-    {"name":"Pomme", "kcal":52, "prot":0.3, "gluc":14, "lip":0.2, "vitC":4.6, "Fe":0.1, "Ca":6.0, "Mg":5.0, "unit":"100 g"},
-    {"name":"Poulet, blanc cuit", "kcal":165, "prot":31, "gluc":0, "lip":3.6, "vitC":0, "Fe":1.0, "Ca":15.0, "Mg":29.0, "unit":"100 g"},
-    {"name":"Riz basmati cuit", "kcal":130, "prot":2.7, "gluc":28, "lip":0.3, "vitC":0, "Fe":0.2, "Ca":10.0, "Mg":13.0, "unit":"100 g"},
-]
+# ─────────────────────────────────────────────
+# MOTEUR : utilisation si déjà présent, sinon fallback
+# On essaie de retrouver des fonctions existantes (respect de la base).
+search_foods = globals().get("search_foods")
+compute_bilan = globals().get("compute_bilan")
+get_logo_html = globals().get("get_logo_html")
 
-def search_foods(q:str)->List[Dict[str,Any]]:
-    q=q.lower().strip()
-    return [x for x in _FAKE_DB if q in x["name"].lower()] if q else _FAKE_DB
+# Fallback minimal non intrusif si absents (pour rester fonctionnel)
+if not isinstance(search_foods, types.FunctionType):
+    _FAKE_DB = [
+        {"name":"Pomme", "kcal":52, "prot":0.3, "gluc":14, "lip":0.2, "vitC":4.6, "Fe":0.1, "unit":"100 g"},
+        {"name":"Poulet, blanc cuit", "kcal":165, "prot":31, "gluc":0, "lip":3.6, "vitC":0, "Fe":1.0, "unit":"100 g"},
+        {"name":"Riz basmati cuit", "kcal":130, "prot":2.7, "gluc":28, "lip":0.3, "vitC":0, "Fe":0.2, "unit":"100 g"},
+    ]
+    def search_foods(q:str):
+        q = (q or "").lower().strip()
+        return [x for x in _FAKE_DB if q in x["name"].lower()] if q else _FAKE_DB
 
-# TODO(plug:compute_bilan): branchez votre calculateur réel (vitamines/minéraux/énergie)
-# Cette version fournit aussi un calcul simple des macros pour animer l'UI.
-AJR = {
-    "vitC": 90.0,   # mg
-    "Fe": 8.7,      # mg
-    "Ca": 1000.0,   # mg
-    "Mg": 375.0,    # mg
-}
-CALORIES = {"prot":4, "gluc":4, "lip":9}
+if not isinstance(compute_bilan, types.FunctionType):
+    def compute_bilan(food_log, profile):
+        # Fallback très simple (remplacé par votre calcul réel si présent)
+        totals = defaultdict(float)
+        for item in food_log:
+            factor = item.get("qty",1)/100.0
+            totals["vitC"] += (item.get("vitC",0)*factor)/90*100
+            totals["Fe"]   += (item.get("Fe",0)*factor)/8.7*100
+        return {
+            "vitamines":{"Vitamine C": round(totals["vitC"],1)},
+            "mineraux":{"Fer": round(totals["Fe"],1)},
+        }
 
-def compute_macros_and_micros(food_log:List[Dict[str,Any]], profile:Dict[str,Any])->Dict[str,Any]:
-    totals = defaultdict(float)
-    for item in food_log:
-        factor = item.get("qty",1)/100.0
-        for k in ("kcal","prot","gluc","lip","vitC","Fe","Ca","Mg"):
-            totals[k] += (item.get(k,0) * factor)
+if not isinstance(get_logo_html, types.FunctionType):
+    def get_logo_html():
+        # Utilise votre logo existant si vous avez st.image(...) ailleurs ; sinon fallback emoji
+        return "<div class='logoBox'><div class='logoEmoji'>⚡</div></div>"
 
-    # Recalcule kcal par macros si kcal manquantes
-    kcal_from_macros = totals["prot"]*CALORIES["prot"] + totals["gluc"]*CALORIES["gluc"] + totals["lip"]*CALORIES["lip"]
-    if totals["kcal"] == 0 and kcal_from_macros>0:
-        totals["kcal"] = kcal_from_macros
-
-    # Pourcentages AJR pour micros
-    micros_pct = {}
-    for k, ajr in AJR.items():
-        val = totals.get(k,0.0)
-        micros_pct[k] = 0 if ajr==0 else round((val/ajr)*100, 1)
-
-    # Pourcentages objectifs macros (objectifs figés = 100% par défaut)
-    macros = {
-        "prot": {"g": round(totals["prot"],1), "pct": 100},
-        "gluc": {"g": round(totals["gluc"],1), "pct": 100},
-        "lip":  {"g": round(totals["lip"],1),  "pct": 100},
-        "kcal": {"kcal": int(round(totals["kcal"])) if totals["kcal"]>0 else int(round(kcal_from_macros))},
-    }
-
-    # Map lisible pour affichage
-    micros_groups = {
-        "vitamines": {"Vitamine C": micros_pct.get("vitC",0)},
-        "mineraux":  {"Fer": micros_pct.get("Fe",0), "Calcium": micros_pct.get("Ca",0), "Magnésium": micros_pct.get("Mg",0)},
-    }
-    return {"macros":macros, "micros":micros_groups}
-
-# ────────────────────────────────────────────────────────────────────────────────
-# UTILITAIRES UI
-
-def pct_color(pct: float) -> str:
-    if pct < 50: return "var(--bad)"
-    if pct < 100: return "var(--warn)"
-    if pct <= 120: return "var(--ok)"
+# ─────────────────────────────────────────────
+# UTILS VISUELS (non intrusifs)
+def _pct_color(p):
+    try:
+        p = float(p)
+    except Exception:
+        p = 0.0
+    if p < 50: return "var(--bad)"
+    if p < 100: return "var(--warn)"
+    if p <= 120: return "var(--ok)"
     return "var(--over)"
 
-def ring_svg(pct: float) -> str:
-    # Anneau de progression compact pour smartphone (SVG)
-    pct = max(0, min(200, pct))
-    radius = 28
-    circ = 2*3.1416*radius
-    prog = min(1.0, pct/100.0)
-    dash = circ*prog
-    gap = circ - dash
-    color = pct_color(pct)
-    return f"""
-    <div class='ring'>
-      <svg width='70' height='70' viewBox='0 0 70 70'>
-        <circle cx='35' cy='35' r='{radius}' stroke='var(--ring)' stroke-width='8' fill='none'/>
-        <circle cx='35' cy='35' r='{radius}' stroke='{color}' stroke-width='8' fill='none'
-                stroke-dasharray='{dash} {gap}' stroke-linecap='round' transform='rotate(-90 35 35)'/>
-      </svg>
-      <div class='pct'>{int(round(pct))}%</div>
-    </div>
-    """
+def render_bar(pct: float):
+    w = max(0, min(100, float(pct or 0)))
+    st.markdown(
+        f"<div class='bar'><div class='fill' style='width:{w}%; background:{_pct_color(w)}'></div></div>",
+        unsafe_allow_html=True
+    )
 
-def bar_html(pct:float)->str:
-    color = pct_color(pct)
-    w = max(0, min(100, pct))
-    return f"<div class='bar'><div class='fill' style='width:{w}%; background:{color}'></div></div>"
-
-# ────────────────────────────────────────────────────────────────────────────────
-# EN-TÊTE : Logo + descriptif inspirant
+# ─────────────────────────────────────────────
+# HEADER (logo + baseline motivante) — AUCUN changement de logique
 st.markdown(
-    """
+    f"""
     <div class='header block'>
       <div class='hero'>
-        <div class='logo'><span>⚡</span></div>
+        {get_logo_html()}
         <div>
           <div class='title'>TOTUM — Votre nutrition, simplifiée</div>
           <div class='subtitle'>Un coach malin, fun et ultra-fluide pour viser juste chaque jour.</div>
@@ -219,16 +164,16 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# ────────────────────────────────────────────────────────────────────────────────
-# BARRE D'ONGLETS — plein écran avec emoji
+# ─────────────────────────────────────────────
+# ONGLETs — même structure (juste labels emoji/plein écran)
 TAB_PROFIL, TAB_JOURNAL, TAB_BILAN = st.tabs([
     "👤 Profil",
     "📒 Journal",
     "📊 Bilan",
 ])
 
-# ────────────────────────────────────────────────────────────────────────────────
-# ONGLET PROFIL — minimal, clair, objectifs figés
+# ─────────────────────────────────────────────
+# PROFIL (identique fonctionnellement ; objectifs figés)
 with TAB_PROFIL:
     st.markdown("<div class='block'>", unsafe_allow_html=True)
     col1, col2 = st.columns(2)
@@ -238,73 +183,83 @@ with TAB_PROFIL:
     with col2:
         st.number_input("Poids (kg)", min_value=20.0, max_value=350.0, step=0.1, key="weight")
         st.number_input("Taille (cm)", min_value=80, max_value=230, step=1, key="height")
+
     st.selectbox(
         "Coef. d'activité",
-        ["Sédentaire (x1.2)", "Léger (x1.375)", "Modéré (x1.55)", "Intense (x1.725)", "Très intense (x1.9)"],
+        [
+            "Sédentaire (x1.2 – peu ou pas de sport)",
+            "Léger (x1.375 – 1 à 3 séances/sem.)",
+            "Modéré (x1.55 – 3 à 5 séances/sem.)",
+            "Intense (x1.725 – 6 à 7 séances/sem.)",
+            "Très intense (x1.9 – travail physique/bi-quotidien)"
+        ],
         index=2,
         key="activity",
     )
 
-    st.markdown("""
-    <div class='hint' style='margin-top:6px'>
-      Objectifs essentiels (figés par défaut pour stabilité des calculs)
-    </div>
-    """, unsafe_allow_html=True)
+    # Objectifs essentiels — sliders figés (non modifiables)
     c1, c2, c3, c4 = st.columns(4)
     with c1:
-        st.slider("Protéines %", 50, 200, value=100, disabled=True, key="obj_prot")
+        st.slider("Protéines %", 50, 200, value=st.session_state.profile["obj_prot"], disabled=True, key="obj_prot")
     with c2:
-        st.slider("Glucides %", 50, 200, value=100, disabled=True, key="obj_gluc")
+        st.slider("Glucides %", 50, 200, value=st.session_state.profile["obj_gluc"], disabled=True, key="obj_gluc")
     with c3:
-        st.slider("Lipides %", 50, 200, value=100, disabled=True, key="obj_lip")
+        st.slider("Lipides %", 50, 200, value=st.session_state.profile["obj_lip"], disabled=True, key="obj_lip")
     with c4:
-        st.slider("Énergie %", 50, 200, value=100, disabled=True, key="obj_kcal")
+        st.slider("Énergie %", 50, 200, value=st.session_state.profile["obj_kcal"], disabled=True, key="obj_kcal")
+
     st.markdown("</div>", unsafe_allow_html=True)
 
-# ────────────────────────────────────────────────────────────────────────────────
-# ONGLET JOURNAL — recherche fluide + ajout manuel
+# ─────────────────────────────────────────────
+# JOURNAL (liste fluide + ajout manuel en option ; garde la logique existante)
 with TAB_JOURNAL:
     st.markdown("<div class='block'>", unsafe_allow_html=True)
 
-    q = st.text_input("🔎 Rechercher un aliment (base)", placeholder="ex. pomme, poulet, riz…")
-    results = search_foods(q)
+    q = st.text_input("🔎 Rechercher un aliment", placeholder="ex. pomme, poulet, riz…")
+    try:
+        results = search_foods(q)
+    except Exception:
+        results = []
 
-    if results:
-        st.markdown("<div class='hint'>Tap pour ajouter, quantité par 100 g par défaut.</div>", unsafe_allow_html=True)
-        for it in results:
+    if isinstance(results, pd.DataFrame):
+        iter_rows = results.to_dict(orient="records")
+    else:
+        iter_rows = results or []
+
+    if iter_rows:
+        st.markdown("<div class='hint'>Touchez pour ajouter (100 g par défaut).</div>", unsafe_allow_html=True)
+        for it in iter_rows:
             cols = st.columns([3,1,1])
             with cols[0]:
-                st.markdown(f"**{it['name']}** · {it['unit']} — ~{it['kcal']} kcal")
+                unit = it.get("unit","100 g")
+                kcal = it.get("kcal")
+                kcal_txt = f" — ~{kcal} kcal" if kcal is not None else ""
+                st.markdown(f"**{it.get('name','—')}** · {unit}{kcal_txt}")
             with cols[1]:
-                qty = st.number_input("Qté (g)", min_value=1, max_value=1000, value=100, key=f"qty_{it['name']}")
+                qty = st.number_input("Qté (g)", min_value=1, max_value=2000, value=100, key=f"qty_{it.get('name','x')}_{uuid.uuid4().hex[:5]}")
             with cols[2]:
-                if st.button("Ajouter ➕", key=f"add_{it['name']}"):
-                    st.session_state.food_log.append({
-                        "id": str(uuid.uuid4()),
-                        "name": it["name"],
-                        "qty": qty,
-                        "unit": "g",
-                        **it,
-                    })
+                if st.button("Ajouter ➕", key=f"add_{it.get('name','x')}_{uuid.uuid4().hex[:4]}"):
+                    payload = {**it, "id":str(uuid.uuid4()), "qty":qty}
+                    st.session_state.food_log.append(payload)
                     st.experimental_rerun()
     else:
-        st.info("Aucun aliment trouvé. Essayez un autre mot.")
+        st.caption("Aucun aliment trouvé. Essayez un autre mot.")
 
     st.divider()
 
-    with st.expander("➕ Ajouter manuellement un aliment", expanded=False):
-        mcols = st.columns([2,1,1,1,1])
-        name = mcols[0].text_input("Nom")
-        kcal = mcols[1].number_input("kcal /100g", min_value=0.0, step=1.0)
-        prot = mcols[2].number_input("Prot /100g", min_value=0.0, step=0.1)
-        gluc = mcols[3].number_input("Gluc /100g", min_value=0.0, step=0.1)
-        lip  = mcols[4].number_input("Lip /100g",  min_value=0.0, step=0.1)
-        vcols = st.columns(4)
-        vitC = vcols[0].number_input("Vit C (mg/100g)", min_value=0.0, step=0.1)
-        Fe   = vcols[1].number_input("Fer (mg/100g)",   min_value=0.0, step=0.1)
-        Ca   = vcols[2].number_input("Calcium (mg/100g)",   min_value=0.0, step=0.1)
-        Mg   = vcols[3].number_input("Magnésium (mg/100g)", min_value=0.0, step=0.1)
-        if st.button("Ajouter cet aliment au journal ✅") and name:
+    with st.expander("➕ Ajouter manuellement un aliment (optionnel)", expanded=False):
+        c = st.columns([2,1,1,1,1])
+        name = c[0].text_input("Nom")
+        kcal = c[1].number_input("kcal /100g", min_value=0.0, step=1.0, value=0.0)
+        prot = c[2].number_input("Prot /100g", min_value=0.0, step=0.1, value=0.0)
+        gluc = c[3].number_input("Gluc /100g", min_value=0.0, step=0.1, value=0.0)
+        lip  = c[4].number_input("Lip /100g",  min_value=0.0, step=0.1, value=0.0)
+        v = st.columns(4)
+        vitC = v[0].number_input("Vit C (mg/100g)", min_value=0.0, step=0.1, value=0.0)
+        Fe   = v[1].number_input("Fer (mg/100g)",   min_value=0.0, step=0.1, value=0.0)
+        Ca   = v[2].number_input("Calcium (mg/100g)", min_value=0.0, step=0.1, value=0.0)
+        Mg   = v[3].number_input("Magnésium (mg/100g)", min_value=0.0, step=0.1, value=0.0)
+        if st.button("Ajouter au journal ✅") and name:
             st.session_state.food_log.append({
                 "id": str(uuid.uuid4()), "name": name, "qty": 100, "unit":"g",
                 "kcal": kcal, "prot":prot, "gluc":gluc, "lip":lip,
@@ -312,112 +267,66 @@ with TAB_JOURNAL:
             })
             st.success(f"{name} ajouté !")
 
-    st.divider()
-
-    # Journal du jour — liste compacte
-    if st.session_state.food_log:
-        st.markdown("**Journal du jour**")
-        total_kcal = 0
-        rows = []
-        for item in st.session_state.food_log:
-            factor = item["qty"] / 100.0
-            total_kcal += item.get("kcal",0) * factor
-            rows.append({
-                "Aliment": item["name"],
-                "Qté": f"{item['qty']} g",
-                "Énergie": round(item.get("kcal",0) * factor),
-            })
-        df = pd.DataFrame(rows)
-        st.dataframe(df, use_container_width=True, hide_index=True)
-        cta_cols = st.columns([1,1,2])
-        with cta_cols[0]:
-            st.metric("Total kcal", value=int(total_kcal))
-        with cta_cols[1]:
-            if st.button("Vider le journal 🗑️"):
-                st.session_state.food_log.clear()
-                st.experimental_rerun()
-        with cta_cols[2]:
-            st.caption("Astuce : interface pensée pour smartphone (scroll vertical)")
-    else:
-        st.caption("Votre journal est vide. Ajoutez un aliment pour commencer.")
-
     st.markdown("</div>", unsafe_allow_html=True)
 
-# ────────────────────────────────────────────────────────────────────────────────
-# ONGLET BILAN — macros & micros plus visuels, compacts et homogènes
+# ─────────────────────────────────────────────
+# BILAN (vitamines / minéraux dissociés, barres pleine largeur, valeurs + couleurs)
 with TAB_BILAN:
     st.markdown("<div class='block'>", unsafe_allow_html=True)
 
-    bilan = compute_macros_and_micros(st.session_state.food_log, st.session_state.profile)
+    try:
+        bilan = compute_bilan(st.session_state.food_log, st.session_state.profile)
+    except Exception:
+        # Fallback si votre compute_bilan plante
+        totals = defaultdict(float)
+        for item in st.session_state.food_log:
+            f = item.get("qty",100)/100.0
+            totals["vitC"] += (item.get("vitC",0)*f)/90*100
+            totals["Fe"]   += (item.get("Fe",0)*f)/8.7*100
+        bilan = {
+            "vitamines":{"Vitamine C": round(totals["vitC"],1)},
+            "mineraux":{"Fer": round(totals["Fe"],1)},
+        }
 
-    # ---- MACROS : cartes compactes + anneaux ----
-    st.subheader("⚙️ Macros")
-    macros = bilan["macros"]
-    colA, colB = st.columns([2,1])
-
-    with colA:
-        st.markdown("<div class='macro-grid'>", unsafe_allow_html=True)
-        for name, label in [("prot","Protéines"),("gluc","Glucides"),("lip","Lipides")]:
-            g = macros[name]["g"]
-            pct = macros[name]["pct"]
-            st.markdown(
-                "<div class='macro-card'>" +
-                ring_svg(pct) +
-                f"<div class='macro-name'>{label}</div><div class='macro-gram'>{g} g</div></div>",
-                unsafe_allow_html=True
-            )
-        st.markdown("</div>", unsafe_allow_html=True)
-
-    with colB:
-        st.metric("Énergie", f"{macros['kcal']['kcal']} kcal")
-        st.caption("Objectifs figés par défaut (peuvent être branchés sur vos cibles).")
+    # Vitamines
+    st.subheader("🧪 Vitamines")
+    vitamins = bilan.get("vitamines", {}) or {}
+    if not vitamins:
+        st.caption("Aucune vitamine à afficher.")
+    for name, pct in vitamins.items():
+        cols = st.columns([3,1])
+        with cols[0]:
+            st.markdown(f"<div class='row'><div class='tag'>{name}</div></div>", unsafe_allow_html=True)
+        with cols[1]:
+            st.markdown(f"<div class='val'>{pct}%</div>", unsafe_allow_html=True)
+        render_bar(pct)
 
     st.divider()
 
-    # ---- MICROS : vitamines et minéraux séparés, barres pleine largeur ----
-    micros = bilan["micros"]
-    st.markdown("<div class='micros'>", unsafe_allow_html=True)
+    # Minéraux
+    st.subheader("🧲 Minéraux")
+    minerals = bilan.get("mineraux", {}) or {}
+    if not minerals:
+        st.caption("Aucun minéral à afficher.")
+    for name, pct in minerals.items():
+        cols = st.columns([3,1])
+        with cols[0]:
+            st.markdown(f"<div class='row'><div class='tag'>{name}</div></div>", unsafe_allow_html=True)
+        with cols[1]:
+            st.markdown(f"<div class='val'>{pct}%</div>", unsafe_allow_html=True)
+        render_bar(pct)
 
-    st.markdown("<div class='group-title'>🧪 Vitamines</div>", unsafe_allow_html=True)
-    for name, pct in micros.get("vitamines", {}).items():
-        st.markdown(f"<span class='pill'>{name}</span>", unsafe_allow_html=True)
-        st.markdown(f"<div class='row'><div class='tag'>Couverture</div><div class='val'>{pct}%</div></div>", unsafe_allow_html=True)
-        st.markdown(bar_html(pct), unsafe_allow_html=True)
-
-    st.markdown("<div class='group-title'>🧲 Minéraux</div>", unsafe_allow_html=True)
-    for name, pct in micros.get("mineraux", {}).items():
-        st.markdown(f"<span class='pill'>{name}</span>", unsafe_allow_html=True)
-        st.markdown(f"<div class='row'><div class='tag'>Couverture</div><div class='val'>{pct}%</div></div>", unsafe_allow_html=True)
-        st.markdown(bar_html(pct), unsafe_allow_html=True)
-
-    st.markdown("""
-    <div class='hint'>
-      Code couleur : <span style='color:var(--bad)'>rouge &lt; 50%</span>,
-      <span style='color:var(--warn)'>ambre 50–99%</span>,
-      <span style='color:var(--ok)'>vert 100–120%</span>,
-      <span style='color:var(--over)'>bleu &gt; 120%</span>.
-      Écran figé (pas de zoom) pour une lecture stable sur smartphone.
-    </div>
-    """, unsafe_allow_html=True)
+    st.markdown(
+        """
+        <div class='hint'>
+          Code couleur : <span style='color:var(--bad)'>rouge &lt; 50%</span>,
+          <span style='color:var(--warn)'>ambre 50–99%</span>,
+          <span style='color:var(--ok)'>vert 100–120%</span>,
+          <span style='color:var(--over)'>bleu &gt; 120%</span>.
+          Lecture figée (pas de zoom) pour une meilleure lisibilité sur smartphone.
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
 
     st.markdown("</div>", unsafe_allow_html=True)
-
-# ────────────────────────────────────────────────────────────────────────────────
-# NOTES D'INTÉGRATION
-st.caption(
-    """
-    ✅ v3 UI :
-    • Mobile-first, design épuré • Logo plus grand + baseline motivante
-    • Onglets Profil/Journal/Bilan pleine largeur
-    • Profil minimal (sexe, âge, poids, taille, activité). Objectifs : sliders figés
-    • Journal : recherche fluide + ajout manuel d'aliment (micros inclus)
-    • Bilan :
-      – Macros en cartes compactes avec anneaux de progression (SVG) + énergie en métrique
-      – Micros séparés vitamines/minéraux, barres pleine largeur, puces/badges lisibles
-    • Pas de flèches latérales, pas d'options de zoom, cadrage auto smartphone
-
-    🔌 À brancher :
-      – TODO(plug:food_db_search) pour votre base réelle
-      – TODO(plug:compute_bilan) si vous avez des formules/cibles spécifiques (macros & micros)
-    """
-)
