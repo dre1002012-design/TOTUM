@@ -1,5 +1,5 @@
 # Totum — Suivi nutritionnel
-# Fix ALA (somme robuste + conversion numérique préalable) & fond UI renforcé
+# UI facelift: fond blanc global (clair), dark mode auto, boutons orange conservés
 from __future__ import annotations
 import os, io, re, json, sqlite3, unicodedata, datetime as dt, base64
 from pathlib import Path
@@ -9,7 +9,7 @@ import streamlit as st
 import plotly.graph_objects as go
 import openpyxl
 
-VERSION = "v2025-10-06-ALA-solid-UIbg-01"
+VERSION = "v2025-10-06-ui-light-dark-keep-orange-01"
 
 st.set_page_config(
     page_title="Totum — suivi nutritionnel",
@@ -160,38 +160,72 @@ COLORS = {
     "bad":       "#d9534f",
 }
 
-# ============ Mobile-first CSS + Topbar ============
+# ============ Mobile-first CSS + Topbar (light + dark auto) ============
 def apply_mobile_css_and_topbar(logo_b64: str | None):
     st.markdown(f"""
     <style>
-    /* Masque la barre Streamlit et force le fond partout */
-    [data-testid="stToolbar"], [data-testid="stDecoration"], [data-testid="stStatusWidget"], header, footer {{ display: none !important; }}
+    /* Cache les barres Streamlit */
+    [data-testid="stToolbar"], [data-testid="stDecoration"], [data-testid="stStatusWidget"], header, footer {{
+      display: none !important;
+    }}
+
+    /* Thème clair par défaut : fond blanc partout */
+    :root {{
+      --bg: #ffffff;
+      --card: #ffffff;
+      --ink: {COLORS['ink']};
+      --muted: {COLORS['muted']};
+      --border: rgba(0,0,0,.06);
+      --shadow: 0 10px 28px rgba(0,0,0,.08);
+    }}
+
+    /* Mode sombre auto si l’appareil est en dark */
+    @media (prefers-color-scheme: dark) {{
+      :root {{
+        --bg: #0f1216;
+        --card: #151a20;
+        --ink: #f6f7f8;
+        --muted: #b9c0c7;
+        --border: rgba(255,255,255,.08);
+        --shadow: 0 10px 28px rgba(0,0,0,.5);
+      }}
+    }}
+
     html, body, .stApp, [data-testid="stAppViewContainer"] {{
+      background: var(--bg) !important;
+      color: var(--ink);
       font-size: 15.5px;
-      background: linear-gradient(180deg, #fff4ea 0%, #fffaf5 60%, #ffffff 100%) !important;
       min-height: 100vh;
     }}
-    .block-container {{ padding-top: .8rem; padding-bottom: .8rem; max-width: 1100px; }}
 
+    .block-container {{
+      padding-top: .8rem; padding-bottom: .8rem; max-width: 1100px;
+    }}
+
+    /* Cartes et éléments */
+    .card, .topbar {{
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      box-shadow: var(--shadow);
+    }}
+
+    /* TOP BAR */
     .topbar {{
       position: sticky; top: 0; z-index: 100;
-      background: linear-gradient(135deg, #fff0e5 0%, #fffaf6 40%, #ffffff 100%);
-      border: 1px solid rgba(0,0,0,.06);
-      border-radius: 16px;
-      box-shadow: 0 10px 28px rgba(0,0,0,.09);
       padding: .55rem .9rem; margin-bottom: .6rem;
     }}
     .topbar-grid {{ display: grid; grid-template-columns: auto 1fr; align-items: center; gap: .8rem; }}
     .topbar-logo {{
-      width: 96px; height: 96px; min-width: 96px;
-      border-radius: 14px; object-fit: contain; background:#fff; padding:.35rem;
+      width: 110px; height: 110px; min-width: 110px;
+      border-radius: 14px; object-fit: contain; background:#fff; padding:.45rem;
       filter: drop-shadow(0 10px 24px rgba(255,127,63,.40));
-      border: 1px solid rgba(0,0,0,.05);
+      border: 1px solid var(--border);
     }}
-    .topbar-title {{ font-weight: 900; color: {COLORS['ink']}; font-size: clamp(22px, 3vw, 30px); margin: 0; line-height: 1.05; }}
-    .topbar-sub {{ margin-top: .15rem; color: {COLORS['muted']}; font-size: .98rem; }}
+    .topbar-title {{ font-weight: 900; color: var(--ink); font-size: clamp(22px, 3vw, 30px); margin: 0; line-height: 1.05; }}
+    .topbar-sub {{ margin-top: .15rem; color: var(--muted); font-size: .98rem; }}
 
-    /* Onglets : boutons larges et stylés */
+    /* Tabs */
     [data-baseweb="tab-list"] {{
       width: 100%;
       display: grid !important;
@@ -201,17 +235,17 @@ def apply_mobile_css_and_topbar(logo_b64: str | None):
     }}
     [data-baseweb="tab-list"] button {{
       width: 100%;
-      background: linear-gradient(180deg, #ffffff 0%, #fff7ef 95%);
+      background: var(--card);
       border-radius: 12px !important;
       box-shadow: 0 2px 12px rgba(0,0,0,.06);
-      border: 1px solid rgba(0,0,0,.06);
+      border: 1px solid var(--border);
       padding: .55rem .6rem !important;
       font-weight: 800;
-      color: {COLORS['ink']};
+      color: var(--ink);
     }}
     [data-baseweb="tab-highlight"] {{ background: linear-gradient(90deg, {COLORS['brand']}, {COLORS['brand2']}); height: 3px; }}
 
-    /* Boutons d'action */
+    /* Boutons d'action — orange Totum conservé */
     .stButton>button {{
       background: linear-gradient(90deg, {COLORS['brand']}, {COLORS['brand2']});
       border: 0; color: #fff; font-weight: 900;
@@ -219,19 +253,22 @@ def apply_mobile_css_and_topbar(logo_b64: str | None):
       border-radius: 12px;
     }}
 
-    .donut-title {{ font-size: 14px; font-weight: 800; margin-bottom: 0.15rem; color: {COLORS['ink']}; }}
+    /* Titres donuts */
+    .donut-title {{ font-size: 14px; font-weight: 800; margin-bottom: 0.15rem; color: var(--ink); }}
+
+    /* Capteurs de légende */
     .dot {{ display:inline-block; width:.8em; height:.8em; border-radius:50%; margin-right:.35em; vertical-align: middle; }}
     </style>
     """, unsafe_allow_html=True)
 
     logo_html = f"<img class='topbar-logo' src='data:image/png;base64,{logo_b64}' alt='logo'/>" if logo_b64 else ""
     st.markdown(f"""
-    <div class="topbar">
+    <div class="topbar card">
       <div class="topbar-grid">
         <div>{logo_html}</div>
         <div>
           <div class="topbar-title">Totum — Mange mieux, vit mieux</div>
-          <div class="topbar-sub">Ton bien-être commence dans ton assiette !</div>
+          <div class="topbar-sub">Un look moderne, clair, fun — et fidèle à ton logo 🍊</div>
         </div>
       </div>
     </div>
@@ -248,8 +285,11 @@ def donut(cons, target, title, color_key="energie", height=210):
     if target <= 0:
         fig = go.Figure(data=[go.Pie(values=[1], labels=["Objectif manquant"], hole=0.68,
                                      textinfo="label", marker_colors=[COLORS["objectif"]])])
-        fig.update_layout(title=title, margin=dict(l=0, r=0, t=34, b=0), height=height, showlegend=False,
-                          font=dict(size=13))
+        fig.update_layout(
+            title=title, margin=dict(l=0, r=0, t=34, b=0),
+            height=height, showlegend=False, font=dict(size=13),
+            paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)"
+        )
         return fig
     pct = 0.0 if target == 0 else (cons / target * 100.0)
     if pct < 50: wedge = COLORS["bad"]
@@ -263,7 +303,8 @@ def donut(cons, target, title, color_key="energie", height=210):
     fig.update_layout(
         title=title,
         annotations=[dict(text=f"{cons:.1f}/{target:.1f}<br>({pct:.0f}%)", x=0.5, y=0.5, showarrow=False, font=dict(size=15))],
-        margin=dict(l=0, r=0, t=32, b=0), height=height, showlegend=False, font=dict(size=13)
+        margin=dict(l=0, r=0, t=32, b=0), height=height, showlegend=False, font=dict(size=13),
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)"
     )
     return fig
 
@@ -708,7 +749,6 @@ def render_journal_page():
             st.rerun()
 
 def unify_totals_for_date(date_iso: str) -> pd.Series:
-    """Somme **après** conversion numérique pour toutes les colonnes nutriments."""
     df_today = fetch_journal_by_date(date_iso)
     if not df_today.empty:
         base_exclude = {"id","date","repas","nom","quantite_g"}
@@ -744,7 +784,7 @@ def render_bilan_page():
     targets_micro = st.session_state["targets_micro"].copy()
     profile_targets = st.session_state.get("profile_targets", get_profile_targets_cached())
 
-    # --- ALA robuste depuis lignes du jour + fallback totaux ---
+    # --- ALA robuste (inchangé face à la dernière version stable) ---
     def _looks_like_ala(colname: str) -> bool:
         ck = canon_key(colname)
         if "epa" in ck or "dha" in ck:
@@ -754,16 +794,13 @@ def render_bilan_page():
                 ck.endswith("alag") or ck == "alag" or "acidealphalinoleniquew3alag" in ck)
 
     def _ala_consumed_from_day(df: pd.DataFrame, totals_series: pd.Series) -> float:
-        # 1) exact label prioritaire
         if df is not None and not df.empty and "Acide_alpha-linolénique_W3_ALA_g" in df.columns:
             return float(pd.to_numeric(df["Acide_alpha-linolénique_W3_ALA_g"], errors="coerce").fillna(0.0).sum())
-        # 2) fuzzy sur toutes les colonnes
         if df is not None and not df.empty:
             ala_cols = [c for c in df.columns if _looks_like_ala(c)]
             if ala_cols:
                 s = pd.DataFrame(df[ala_cols]).apply(pd.to_numeric, errors="coerce").fillna(0.0)
                 return float(s.sum(numeric_only=True).sum())
-        # 3) fallback totaux : clés ressemblant à ALA
         if isinstance(totals_series, pd.Series) and not totals_series.empty:
             candidates = [k for k in totals_series.index if _looks_like_ala(k)]
             if candidates:
@@ -983,7 +1020,6 @@ def render_bilan_page():
     vit = tmi[tmi["Nutriment"].astype(str).apply(is_vitamin)].copy()
     mino= tmi[~tmi["Nutriment"].astype(str).apply(is_vitamin)].copy()
 
-    # Tri DESC : du plus consommé (en % objectif) au moins consommé
     if not vit.empty:
         vit = vit.sort_values("% objectif", ascending=False)
     if not mino.empty:
@@ -1023,6 +1059,7 @@ def render_bilan_page():
             height=height, margin=dict(l=6,r=6,t=36,b=8),
             legend=dict(orientation="h", y=-0.18),
             font=dict(size=13),
+            paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)"
         )
         st.plotly_chart(fig, config={"displaylogo": False, "responsive": True, "staticPlot": True}, use_container_width=True)
 
@@ -1032,11 +1069,11 @@ def render_bilan_page():
     st.markdown("### 🧂 Minéraux")
     micro_bar(mino, "Minéraux — objectif vs ingéré")
 
-# ===================== Onglet 4 — Alimentation (inchangé) =====================
+# ===================== Onglet 4 — Alimentation (inchangé fonctionnellement) =====================
 def render_alimentation_page():
     st.subheader("🍽️ Alimentation")
 
-    # Conseil du jour (simple & motivant)
+    # Conseil du jour
     last_date = fetch_last_date_with_rows() or dt.date.today().isoformat()
     totals = unify_totals_for_date(last_date)
     prof = st.session_state.get("profile_targets", get_profile_targets_cached())
