@@ -1,32 +1,24 @@
 # Totum — Suivi nutritionnel
-# Fix ALA (somme stricte col. 'Acide_alpha-linolénique_W3_ALA_g' + fuzzy + fallback 14e colonne si libellé ALA)
-# Tri vitamines = du plus consommé au moins consommé (comme minéraux), titres Alimentation ajustés
+# Ultra-compact mobile: 2 colonnes de donuts, titres courts, couleurs dynamiques — logique métier inchangée
+
 from __future__ import annotations
-import os, io, re, json, sqlite3, unicodedata, datetime as dt, base64
-from pathlib import Path
+import os, io, re, json, sqlite3, unicodedata, datetime as dt
 import numpy as np
 import pandas as pd
 import streamlit as st
 import plotly.graph_objects as go
 import openpyxl
 
-VERSION = "v2025-10-06-ALA-col14-fix-vit-sort-desc-alim-titles-01"
-
 st.set_page_config(
-    page_title="Totum — suivi nutritionnel",
+    page_title="Totum, suivi nutritionnel",
     page_icon="🥗",
     layout="wide",
-    initial_sidebar_state="collapsed",
+    initial_sidebar_state="collapsed"  # rendu plus mobile
 )
 
 DB_PATH = os.path.join(os.getcwd(), "totum.db")
 
-# === Assets packagés
-ASSETS_DIR = Path(__file__).parent / "assets"
-DEFAULT_EXCEL_PATH = ASSETS_DIR / "TOTUM-Suivi nutritionnel.xlsx"
-DEFAULT_LOGO_PATH  = ASSETS_DIR / "logo.png"
-
-# ===================== Utils =====================
+# ============ Utils ============
 def strip_accents(text: str) -> str:
     text = str(text or "")
     return "".join(ch for ch in unicodedata.normalize("NFD", text) if unicodedata.category(ch) != "Mn")
@@ -73,7 +65,7 @@ def nutrient_cols(df_or_row):
     cols = list(df_or_row.index if isinstance(df_or_row, pd.Series) else df_or_row.columns)
     return [c for c in cols if str(c).endswith("_100g")]
 
-def per100_to_name(c):
+def per100_to_name(c):  # "Calcium_mg_100g" -> "Calcium_mg"
     return c[:-5]
 
 def drop_parasite_columns(df: pd.DataFrame | None) -> pd.DataFrame | None:
@@ -88,23 +80,27 @@ def drop_parasite_columns(df: pd.DataFrame | None) -> pd.DataFrame | None:
     out = out.loc[:, ~(out.isna().all())]
     return out
 
-def read_sheet_values_path(path: Path, sheet_name: str) -> pd.DataFrame | None:
+def read_sheet_values(uploaded_file, sheet_name) -> pd.DataFrame | None:
     try:
-        with open(path, "rb") as f:
-            data = f.read()
-        bio = io.BytesIO(data)
+        data_bytes = uploaded_file.getvalue()
+    except Exception:
+        uploaded_file.seek(0); data_bytes = uploaded_file.read()
+    bio = io.BytesIO(data_bytes)
+    try:
         wb = openpyxl.load_workbook(bio, data_only=True, read_only=True)
-        if sheet_name not in wb.sheetnames:
-            return None
-        ws = wb[sheet_name]
-        rows = list(ws.values)
-        if not rows:
-            return None
-        header = [str(x) if x is not None else "" for x in rows[0]]
-        df = pd.DataFrame(rows[1:], columns=header)
+        if sheet_name not in wb.sheetnames: return None
+        ws = wb[sheet_name]; data = list(ws.values)
+        if not data: return None
+        header = [str(x) if x is not None else "" for x in data[0]]
+        df = pd.DataFrame(data[1:], columns=header)
         return drop_parasite_columns(df)
     except Exception:
-        return None
+        try:
+            bio.seek(0)
+            xls = pd.ExcelFile(bio, engine="openpyxl")
+            return drop_parasite_columns(xls.parse(sheet_name))
+        except Exception:
+            return None
 
 def clean_liste(df_liste: pd.DataFrame) -> pd.DataFrame:
     df_liste = drop_parasite_columns(df_liste)
@@ -116,7 +112,7 @@ def clean_liste(df_liste: pd.DataFrame) -> pd.DataFrame:
     for c in [x for x in df.columns if x.endswith("_100g")]:
         df[c] = coerce_num_col(df[c]).fillna(0.0)
 
-    # fusion colonnes quasi identiques
+    # fusion de colonnes quasi identiques
     dup_groups = {}
     for c in [x for x in df.columns if c.endswith("_100g")]:
         key = canon_key(c)
@@ -140,15 +136,12 @@ def calc_from_food_row(row: pd.Series, qty_g: float) -> dict:
 
 # ============ Couleurs ============
 COLORS = {
-    "brand":    "#ff7f3f",  # orange Totum
-    "brand2":   "#ffb347",
-    "ink":      "#0d1b1e",
-    "muted":    "#5f6b76",
-    "energie":   "#ff7f3f",
+    "energie":   "#ff8c00",
     "proteines": "#2ca02c",
     "glucides":  "#1f77b4",
     "lipides":   "#d62728",
     "fibres":    "#9467bd",
+    # AG essentiels + omega9
     "omega3":    "#00bcd4",
     "epa":       "#26a69a",
     "dha":       "#7e57c2",
@@ -161,95 +154,26 @@ COLORS = {
     "bad":       "#d9534f",
 }
 
-# ============ Mobile-first CSS + Topbar ============
-def apply_mobile_css_and_topbar(logo_b64: str | None):
+# ============ Mobile UI helpers ============
+def apply_mobile_css(is_mobile: bool, ultra: bool):
+    scale = 0.95 if is_mobile else 1.0
+    st.markdown(f"<style>:root{{--totum-scale:{scale};}}</style>", unsafe_allow_html=True)
     st.markdown(f"""
     <style>
-    :root {{
-      --brand: {COLORS['brand']};
-      --brand2: {COLORS['brand2']};
-      --ink: {COLORS['ink']};
-      --muted: {COLORS['muted']};
-      --bg1: #fffaf5;
-      --bg2: #fff5ea;
-      --shadow: 0 10px 28px rgba(0,0,0,.09);
-    }}
-    [data-testid="stToolbar"], [data-testid="stDecoration"], [data-testid="stStatusWidget"], header, footer {{ display: none !important; }}
-    html, body, [data-testid="stAppViewContainer"] {{
-      font-size: 15.5px;
-      background: linear-gradient(180deg, var(--bg1) 0%, var(--bg2) 80%);
-    }}
-    .block-container {{ padding-top: .8rem; padding-bottom: .8rem; max-width: 1100px; }}
-
-    .topbar {{
-      position: sticky; top: 0; z-index: 100;
-      background: linear-gradient(135deg, #fff0e5 0%, #fffaf6 40%, #ffffff 100%);
-      border: 1px solid rgba(0,0,0,.06);
-      border-radius: 16px;
-      box-shadow: var(--shadow);
-      padding: .55rem .9rem;
-      margin-bottom: .6rem;
-    }}
-    .topbar-grid {{ display: grid; grid-template-columns: auto 1fr; align-items: center; gap: .8rem; }}
-    .topbar-logo {{
-      width: 96px; height: 96px; min-width: 96px;
-      border-radius: 14px;
-      object-fit: contain;
-      filter: drop-shadow(0 10px 24px rgba(255,127,63,.40));
-      background: #fff; padding: .35rem; border: 1px solid rgba(0,0,0,.05);
-    }}
-    .topbar-title {{ font-weight: 900; color: var(--ink); font-size: clamp(22px, 3vw, 30px); margin: 0; line-height: 1.05; }}
-    .topbar-sub {{ margin-top: .15rem; color: var(--muted); font-size: .98rem; }}
-
-    [data-baseweb="tab-list"] {{
-      width: 100%;
-      display: grid !important;
-      grid-template-columns: 1fr 1fr 1fr 1fr;
-      gap: .35rem;
-      margin: .6rem 0 .2rem 0;
-    }}
-    [data-baseweb="tab-list"] button {{
-      width: 100%;
-      background: #fff;
-      border-radius: 12px !important;
-      box-shadow: 0 2px 12px rgba(0,0,0,.05);
-      border: 1px solid rgba(0,0,0,.06);
-      padding: .55rem .6rem !important;
-      font-weight: 700;
-    }}
-    [data-baseweb="tab-highlight"] {{ background: linear-gradient(90deg, var(--brand), var(--brand2)); height: 3px; }}
-
-    .stButton>button {{
-      background: linear-gradient(90deg, var(--brand), var(--brand2));
-      border: 0; color: #fff; font-weight: 800;
-      box-shadow: 0 8px 18px rgba(255,127,63,.28);
-      border-radius: 12px;
-    }}
-
-    .donut-title {{ font-size: 14px; font-weight: 800; margin-bottom: 0.15rem; color: var(--ink); }}
-
-    .dot {{ display:inline-block; width:.8em; height:.8em; border-radius:50%; margin-right:.35em; vertical-align: middle; }}
-
-    .grid-cards {{ display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: .75rem; }}
-    .card {{ background: #fff; border:1px solid rgba(0,0,0,.06); border-radius:14px; padding:.8rem; box-shadow: 0 6px 18px rgba(0,0,0,.06); height: 100%; }}
-    .card .title {{ font-weight: 800; margin-bottom:.25rem; }}
-    .card .benef {{ color: {COLORS['muted']}; font-size:.95rem; }}
+    html, body, [data-testid="stAppViewContainer"] {{ font-size: calc(16px * var(--totum-scale)); }}
+    .block-container {{ padding-top: {0.5 if ultra else 0.6}rem; padding-bottom: {0.5 if ultra else 0.6}rem; }}
+    h1, h2, h3 {{ line-height: 1.15; margin: 0.15rem 0 0.5rem 0; }}
+    .stPlotlyChart {{ height: auto; }}
+    [data-testid="stDataFrame"] div {{ font-size: {0.92 if ultra else 0.95}em; }}
+    .stRadio, .stSelectbox, .stNumberInput, .stDateInput {{ margin-bottom: 0.2rem !important; }}
+    .donut-title {{ font-size: {13 if ultra else 14}px; font-weight: 600; margin-bottom: 0.15rem; }}
     </style>
     """, unsafe_allow_html=True)
 
-    logo_html = f"<img class='topbar-logo' src='data:image/png;base64,{logo_b64}' alt='logo'/>" if logo_b64 else ""
-    st.markdown(f"""
-    <div class="topbar">
-      <div class="topbar-grid">
-        <div>{logo_html}</div>
-        <div>
-          <div class="topbar-title">Totum — Mange mieux, vit mieux</div>
-          <div class="topbar-sub">Ton bien-être commence dans ton assiette !</div>
-        </div>
-      </div>
-    </div>
-    """, unsafe_allow_html=True)
+def short_title(label_long: str, label_short: str, is_mobile: bool) -> str:
+    return label_short if is_mobile else label_long
 
+# === ONE DECIMAL DISPLAY ===
 def round1(x) -> float:
     try:
         return float(np.round(float(x), 1))
@@ -258,29 +182,38 @@ def round1(x) -> float:
 
 def donut(cons, target, title, color_key="energie", height=210):
     cons = float(cons or 0.0); target = float(target or 0.0)
+    # sans objectif
     if target <= 0:
         fig = go.Figure(data=[go.Pie(values=[1], labels=["Objectif manquant"], hole=0.68,
                                      textinfo="label", marker_colors=[COLORS["objectif"]])])
         fig.update_layout(title=title, margin=dict(l=0, r=0, t=34, b=0), height=height, showlegend=False,
                           font=dict(size=13))
         return fig
+    # couleur dynamique
     pct = 0.0 if target == 0 else (cons / target * 100.0)
     if pct < 50: wedge = COLORS["bad"]
     elif pct < 100: wedge = COLORS["warn"]
     else: wedge = COLORS["ok"]
+
     rest = max(target - cons, 0.0)
     fig = go.Figure(data=[
-        go.Pie(values=[cons, rest], labels=["Ingéré", "Restant"], hole=0.70, textinfo="none",
-               marker_colors=[wedge, COLORS["restant"]])
+        go.Pie(
+            values=[cons, rest], labels=["Ingéré", "Restant"], hole=0.70,
+            textinfo="none", marker_colors=[wedge, COLORS["restant"]]
+        )
     ])
     fig.update_layout(
         title=title,
-        annotations=[dict(text=f"{cons:.1f}/{target:.1f}<br>({pct:.0f}%)", x=0.5, y=0.5, showarrow=False, font=dict(size=15))],
-        margin=dict(l=0, r=0, t=32, b=0), height=height, showlegend=False, font=dict(size=13)
+        annotations=[dict(
+            text=f"{cons:.1f}/{target:.1f}<br>({pct:.0f}%)",
+            x=0.5, y=0.5, xref="paper", yref="paper", showarrow=False, font=dict(size=15)
+        )],
+        margin=dict(l=0, r=0, t=32, b=0), height=height, showlegend=False,
+        font=dict(size=13)
     )
     return fig
 
-# ============ Unification totaux ============
+# ============ Unification noms totaux ============
 PREFERRED_NAMES = {
     "energiekcal": "Énergie_kcal",
     "proteinesg":  "Protéines_g",
@@ -293,12 +226,8 @@ PREFERRED_NAMES = {
     "acidealphalinoleniquew3alag":"Acide_alpha-linolénique_W3_ALA_g",
     "acidealpha-linoléniquew3alag":"Acide_alpha-linolénique_W3_ALA_g",
     "acidealpha_linolenique_w3_alag":"Acide_alpha-linolénique_W3_ALA_g",
-    "omega3alag": "Acide_alpha-linolénique_W3_ALA_g",
-    "omega3ala":  "Acide_alpha-linolénique_W3_ALA_g",
-    "w3alag":     "Acide_alpha-linolénique_W3_ALA_g",
-    "alag":       "Acide_alpha-linolénique_W3_ALA_g",
     "epag": "EPA_g", "dhag": "DHA_g",
-    "sucresg":"Sucres_g", "selg":"Sel_g",
+    "sucresg":"Sucres_g", "selg":"Sel_g", "cholesterolmg":"Cholestérol_mg",
     "omega3g": "Omega3_g", "omega3totalg": "Omega3_total_g", "w3totalg":"W3_total_g",
 }
 
@@ -321,7 +250,7 @@ def unify_totals_series(s: pd.Series) -> pd.Series:
         out["Énergie_kcal"] = out["Energie_kcal"]
     return out
 
-# ============ Profil / objectifs ============
+# ============ Profil / objectifs (Excel-like) ============
 def bmr_harris_benedict_revised(sex, age, height_cm, weight_kg):
     if norm(sex).startswith("h"):  # homme
         return 88.362 + 13.397*float(weight_kg) + 4.799*float(height_cm) - 5.677*int(age)
@@ -334,7 +263,7 @@ ACTIVITY_TABLE = {
     "modere":       {"factor": 1.55,  "prot_min": 1.2, "prot_max": 1.6},
     "intense":      {"factor": 1.725, "prot_min": 1.6, "prot_max": 2.0},
     "tresintense":  {"factor": 1.9,   "prot_min": 2.0, "prot_max": 2.5},
-    "athlete":      {"factor": 1.9,   "prot_min": 2.0, "prot_max": 2.5},
+    "athlete":      {"factor": 1.9,   "prot_min": 2.0, "prot_max": 2.5},  # alias
 }
 
 def activity_key(a: str) -> str:
@@ -366,6 +295,7 @@ def excel_like_targets(p: dict) -> dict:
     af = ACTIVITY_TABLE[akey]["factor"]
     prot_max = ACTIVITY_TABLE[akey]["prot_max"]
     tdee = bmr * af
+
     out = {}
     out["energie_kcal"] = float(tdee)
     out["proteines_g"]  = float(float(p["poids_kg"]) * prot_max)
@@ -373,7 +303,7 @@ def excel_like_targets(p: dict) -> dict:
     out["agsatures_g"]  = float(tdee * RULES["agsat_pct"]   / 9.0)
     out["omega9_g"]     = float(tdee * RULES["omega9_pct"]  / 9.0)
     out["omega6_g"]     = float(tdee * RULES["omega6_pct"]  / 9.0)
-    out["ala_w3_g"]     = float(tdee * RULES["ala_pct"]     / 9.0)
+    out["ala_w3_g"]     = float(tdee * RULES["ala_pct"]     / 9.0)  # ALA (objectif profil)
     out["epa_g"]        = RULES["epa_g"]
     out["dha_g"]        = RULES["dha_g"]
     out["glucides_g"]   = float(tdee * RULES["glucides_pct"]/ 4.0)
@@ -382,6 +312,7 @@ def excel_like_targets(p: dict) -> dict:
     out["sel_g"]        = RULES["sel_g"]
     return out
 
+# ===== Cache objectifs Profil (utilisé tel-quel dans Bilan) =====
 def get_profile_targets_cached() -> dict:
     p = st.session_state["profile"]
     base = excel_like_targets(p)
@@ -458,11 +389,6 @@ def insert_journal(date_iso, repas, nom, quantite_g, nutrients: dict):
                  (date_iso, repas, nom, float(quantite_g), json.dumps(nutrients, ensure_ascii=False)))
     conn.commit()
 
-def delete_journal_row(row_id: int):
-    conn = init_db()
-    conn.execute("DELETE FROM journal WHERE id=?", (int(row_id),))
-    conn.commit()
-
 def fetch_journal_by_date(date_iso) -> pd.DataFrame:
     conn = init_db()
     cur = conn.execute("SELECT id,date,repas,nom,quantite_g,nutrients_json FROM journal WHERE date=? ORDER BY id ASC;", (date_iso,))
@@ -482,7 +408,7 @@ def fetch_last_date_with_rows() -> str | None:
     r = cur.fetchone()
     return r[0] if r else None
 
-# ============ Chargement Excel auto ============
+# ============ Objectifs & extraction générique ============
 def build_objectif_robuste(df: pd.DataFrame) -> pd.Series:
     if df is None or df.empty:
         return pd.Series(dtype=float)
@@ -494,46 +420,26 @@ def build_objectif_robuste(df: pd.DataFrame) -> pd.Series:
     out = pd.Series([round1(x) for x in out], index=df.index, dtype=float)
     return out
 
-def load_assets_default():
-    if not DEFAULT_EXCEL_PATH.exists():
-        return
-    # Liste
-    df_liste = read_sheet_values_path(DEFAULT_EXCEL_PATH, "Liste")
-    if df_liste is not None and not df_liste.empty:
-        st.session_state["foods"] = clean_liste(df_liste)
-    # Cibles micro
-    sex = st.session_state["profile"]["sexe"]
-    micro_sheet = "Cible micro Homme" if canon(sex).startswith("homme") else "Cible micro Femme"
-    df_micro = read_sheet_values_path(DEFAULT_EXCEL_PATH, micro_sheet)
-    if df_micro is not None and "Nutriment" in df_micro.columns:
-        tm = drop_parasite_columns(df_micro.copy())
-        tm["Objectif"] = build_objectif_robuste(tm)
-        keep = [c for c in ["Nutriment","Icône","Fonction","Bénéfice Santé","Objectif"] if c in tm.columns]
-        st.session_state["targets_micro"] = tm[keep]
-    # Cibles macro
-    df_macro_raw = read_sheet_values_path(DEFAULT_EXCEL_PATH, "Cible Macro")
-    if df_macro_raw is not None and "Nutriment" in df_macro_raw.columns:
-        tmac = drop_parasite_columns(df_macro_raw.copy())
-        tmac["Objectif"] = build_objectif_robuste(tmac)
-        keep = [c for c in ["Nutriment","Icône","Fonction","Bénéfice Santé","Objectif"] if c in tmac.columns]
-        st.session_state["targets_macro"] = tmac[keep]
-
 def macro_base_name(label: str) -> str:
     name, _ = parse_name_unit(label)
-    nc = canon(name); ns = nc.replace(" ", "")
+    nc = canon(name)
+    nc_nospace = nc.replace(" ", "")
     if nc.startswith("energie"): return "energie"
     if nc.startswith("proteine"): return "proteines"
     if nc.startswith("glucide"): return "glucides"
     if nc.startswith("lipide"): return "lipides"
     if nc.startswith("sucres"): return "sucres"
-    if "acides grassatures" in nc or "acides gras satures" in nc or "ag satures" in nc or "agsatures" in nc: return "agsatures"
-    if "omega9" in ns: return "omega9"
-    if "omega6" in ns: return "omega6"
+    if "acides grassatures" in nc or "acides gras satures" in nc or "ag satures" in nc or "agsatures" in nc:
+        return "agsatures"
+    if "omega9" in nc_nospace: return "omega9"
+    if "omega6" in nc_nospace: return "omega6"
     if "oleique" in nc and "w9" in nc: return "omega9"
+    # (Correction: on retourne directement omega6 sans ligne parasite)
     if "linoleique" in nc and ("w6" in nc or "la" in nc): return "omega6"
     if "epa" in nc: return "epa"
     if "dha" in nc: return "dha"
-    if "omega3" in ns or "w3" in ns or ("alpha" in nc and "linolenique" in nc) or "ala" in nc: return "ala"
+    if "omega3" in nc_nospace or "w3" in nc_nospace or ("alpha" in nc and "linolenique" in nc) or "ala" in nc:
+        return "ala"  # ligne Oméga-3 → objectif ALA; conso = ALA+EPA+DHA
     if nc.startswith("fibres"): return "fibres"
     if nc.startswith("sel"): return "sel"
     return name
@@ -546,102 +452,127 @@ if "logo_bytes" not in st.session_state: st.session_state["logo_bytes"] = None
 if "profile" not in st.session_state: st.session_state["profile"] = load_profile()
 if "last_added_date" not in st.session_state: st.session_state["last_added_date"] = None
 if "profile_targets" not in st.session_state: st.session_state["profile_targets"] = get_profile_targets_cached()
+if "mobile" not in st.session_state: st.session_state["mobile"] = False
+if "ultra" not in st.session_state: st.session_state["ultra"] = False
 
-# -- logo auto
-def _reload_default_logo():
-    if DEFAULT_LOGO_PATH.exists():
-        st.session_state["logo_bytes"] = DEFAULT_LOGO_PATH.read_bytes()
+# ============ Header ============
+left, mid, right = st.columns([1,6,4])
+with left:
+    if st.session_state["logo_bytes"]:
+        st.image(st.session_state["logo_bytes"], width=58)
+with mid:
+    st.title("Totum — suivi nutritionnel")
+with right:
+    c1, c2 = st.columns(2)
+    with c1:
+        st.session_state["mobile"] = st.checkbox(
+            "📱 Mobile",
+            value=st.session_state["mobile"],
+            key="ck_mobile"
+        )
+    with c2:
+        st.session_state["ultra"] = st.checkbox(
+            "📱 Ultra-compact (2 col.)",
+            value=st.session_state["ultra"],
+            key="ck_ultra"
+        )
+    if st.button("💾 Sauver profil & journal"):
+        save_profile(st.session_state["profile"])
+        st.success("Données sauvegardées (SQLite : totum.db)")
 
-_reload_default_logo()
-load_assets_default()
+# Applique le style mobile/ultra
+MOBILE = st.session_state["mobile"]
+ULTRA  = st.session_state["ultra"]
+apply_mobile_css(MOBILE, ULTRA)
 
-def _logo_b64() -> str | None:
-    data = st.session_state.get("logo_bytes")
-    if not data and DEFAULT_LOGO_PATH.exists():
-        data = DEFAULT_LOGO_PATH.read_bytes()
-    if data:
-        return base64.b64encode(data).decode()
-    return None
+# ============ Import Excel (sidebar) ============
+with st.sidebar:
+    st.header("📥 Import Excel")
+    upl = st.file_uploader("Fichier TOTUM-Suivi nutritionnel.xlsx", type=["xlsx"])
+    logo = st.file_uploader("Logo TOTUM (PNG/JPG)", type=["png","jpg","jpeg"])
+    if logo is not None:
+        st.session_state["logo_bytes"] = logo.read()
 
-# ===================== TOPBAR =====================
-apply_mobile_css_and_topbar(_logo_b64())
+    if upl:
+        df_liste = read_sheet_values(upl, "Liste")
+        if df_liste is not None:
+            st.session_state["foods"] = clean_liste(df_liste)
 
-# ===================== PAGES =====================
-def render_profile_page():
-    st.subheader("👤 Profil")
+        sex = st.session_state["profile"]["sexe"]
+        micro_sheet = "Cible micro Homme" if canon(sex).startswith("homme") else "Cible micro Femme"
+        df_micro = read_sheet_values(upl, micro_sheet)
+        if df_micro is not None and "Nutriment" in df_micro.columns:
+            tm = drop_parasite_columns(df_micro.copy())
+            tm["Objectif"] = build_objectif_robuste(tm)
+            keep = [c for c in ["Nutriment","Icône","Fonction","Bénéfice Santé","Objectif"] if c in tm.columns]
+            st.session_state["targets_micro"] = tm[keep]
+
+        df_macro_raw = read_sheet_values(upl, "Cible Macro")
+        if df_macro_raw is not None and "Nutriment" in df_macro_raw.columns:
+            tmac = drop_parasite_columns(df_macro_raw.copy())
+            tmac["Objectif"] = build_objectif_robuste(tmac)
+            keep = [c for c in ["Nutriment","Icône","Fonction","Bénéfice Santé","Objectif"] if c in tmac.columns]
+            st.session_state["targets_macro"] = tmac[keep]
+
+# ============ Onglets ============
+tab_profile, tab_journal, tab_bilan = st.tabs(["👤 Profil", "🧾 Journal", "📊 Bilan"])
+
+# ----- Profil -----
+with tab_profile:
+    st.subheader("Profil")
     p = st.session_state["profile"]
     c1, c2, c3, c4 = st.columns(4)
     p["sexe"] = c1.selectbox("Sexe", ["Homme","Femme"], index=0 if canon(p["sexe"]).startswith("homme") else 1)
     p["age"]       = int(c2.number_input("Âge",        min_value=10,  max_value=100,  value=int(p["age"]),       step=1))
     p["taille_cm"] = int(c3.number_input("Taille (cm)",min_value=120, max_value=230,  value=int(p["taille_cm"]),  step=1))
     p["poids_kg"]  = int(c4.number_input("Poids (kg)", min_value=30,  max_value=250,  value=int(p["poids_kg"]),   step=1))
-
     p["activite"] = st.selectbox(
         "Activité",
         ["Sédentaire","Léger (1-3x/sem)","Modéré (3-5x/sem)","Intense (6-7x/sem)","Athlète (2x/jour)"],
         index=["Sédentaire","Léger (1-3x/sem)","Modéré (3-5x/sem)","Intense (6-7x/sem)","Athlète (2x/jour)"].index(p["activite"])
     )
-    p["repartition_macros"] = (30,55,15)
+    st.caption("Répartition P/G/L affichée pour info (objectifs = Excel : 35 % L, 55 % G, Prot = g/kg).")
+    cP, cG, cL = st.columns(3)
+    pr = cP.slider("Protéines (%)", 0, 100, int(p["repartition_macros"][0]), 1)
+    gc = cG.slider("Glucides (%)",  0, 100, int(p["repartition_macros"][1]), 1)
+    lp = cL.slider("Lipides (%)",   0, 100, int(p["repartition_macros"][2]), 1)
+    p["repartition_macros"] = (pr, gc, lp)
     st.session_state["profile"] = p
 
-    if st.button("💾 Sauver mon profil"):
+    if st.button("💾 Sauver le profil"):
         save_profile(p); st.success("Profil enregistré.")
 
+    base_vals = excel_like_targets(p)
     profile_targets = get_profile_targets_cached()
-    st.markdown("#### 🎯 Objectifs clés (calculés)")
-    kc, pr, gl, li, fi = st.columns(5)
-    kc.metric("Énergie (kcal)", f"{profile_targets['energie_kcal']:.1f}")
-    pr.metric("Protéines (g)", f"{profile_targets['proteines_g']:.1f}")
-    gl.metric("Glucides (g)", f"{profile_targets['glucides_g']:.1f}")
-    li.metric("Lipides (g)",   f"{profile_targets['lipides_g']:.1f}")
-    fi.metric("Fibres (g)",    f"{profile_targets['fibres_g']:.1f}")
 
-def render_journal_page():
-    st.subheader("🧾 Journal")
+    prof_rows = [{
+        "Énergie (kcal)": profile_targets["energie_kcal"],
+        "Protéines (g)":  profile_targets["proteines_g"],
+        "Glucides (g)":   profile_targets["glucides_g"],
+        "Lipides (g)":    profile_targets["lipides_g"],
+        "Fibres (g)":     profile_targets["fibres_g"],
+        "Sucres (g)":     profile_targets["sucres_g"],
+        "AG saturés (g)": profile_targets["agsatures_g"],
+        "Oméga-9 (g)":    profile_targets["omega9_g"],
+        "Oméga-6 (g)":    profile_targets["omega6_g"],
+        "Oméga-3 (ALA) (g)": profile_targets["ala_w3_g"],
+        "EPA (g)":        profile_targets["epa_g"],
+        "DHA (g)":        profile_targets["dha_g"],
+        "Sel (g)":        profile_targets["sel_g"],
+    }]
+    st.markdown("#### Objectifs (1 déc.)")
+    st.write(pd.DataFrame(prof_rows).T.rename(columns={0:"Objectif"}))
+
+# ----- Journal -----
+with tab_journal:
+    st.subheader("Journal")
     foods = st.session_state["foods"]
-
-    # Recherche + suggestions
-    q = st.text_input("🔎 Rechercher un aliment", placeholder="Tape 2-3 lettres… (ex: poulet, riz, pomme)")
-    suggestions = []
-    if not foods.empty:
-        base = foods["nom"].astype(str).tolist()
-        suggestions = base
-        if q:
-            qn = canon(q)
-            suggestions = [x for x in base if qn in canon(x)]
-        suggestions = suggestions[:8]
-
-    if suggestions:
-        st.caption("Suggestions : clique pour pré-remplir l’ajout 👇")
-        for idx, name in enumerate(suggestions):
-            with st.container():
-                cA, cB, cC = st.columns([6,2,2])
-                cA.write(f"• {name}")
-                qty_key = f"qty_sugg_{idx}"
-                qty_val = cB.number_input("g", min_value=1, value=150, step=10, key=qty_key, label_visibility="collapsed")
-                if cC.button("➕", key=f"add_sugg_{idx}"):
-                    row = foods.loc[foods["nom"] == name]
-                    if not row.empty:
-                        row = row.iloc[0]
-                        calc = calc_from_food_row(row, qty_val)
-                        insert_journal(dt.date.today().isoformat(), "Déjeuner", name, qty_val, calc)
-                        st.session_state["last_added_date"] = dt.date.today().isoformat()
-                        st.success(f"Ajouté : {qty_val} g de {name} (Déjeuner)")
-
-    st.divider()
-
-    # Ajout standard
     c1, c2, c3, c4 = st.columns([1,1,1,2])
     date_sel = c1.date_input("Date", value=dt.date.today(), format="DD/MM/YYYY", key="date_input_journal")
     repas = c2.selectbox("Repas", ["Petit-déjeuner","Déjeuner","Dîner","Collation"])
     qty = c3.number_input("Quantité (g)", min_value=1, value=150, step=10)
-    options = foods["nom"].astype(str).tolist() if not foods.empty else ["(liste vide)"]
-    if q:
-        qn = canon(q)
-        options = [x for x in options if qn in canon(x)] or options
-    nom = c4.selectbox("Aliment (liste)", options=options)
-
-    if st.button("➕ Ajouter (depuis la liste)"):
+    nom = c4.selectbox("Aliment", options=foods["nom"].astype(str).tolist() if not foods.empty else ["(liste vide)"])
+    if st.button("➕ Ajouter"):
         if not foods.empty and nom != "(liste vide)":
             row = foods.loc[foods["nom"] == nom]
             if not row.empty:
@@ -650,90 +581,20 @@ def render_journal_page():
                 insert_journal(date_sel.isoformat(), repas, nom, qty, calc)
                 st.session_state["last_added_date"] = date_sel.isoformat()
                 st.success(f"Ajouté : {qty} g de {nom} ({repas})")
-
-    # Aliment personnalisé
-    with st.expander("➕ Ajouter un aliment personnalisé"):
-        cpa, cpb, cpc = st.columns(3)
-        nom_pers = cpa.text_input("Nom de l'aliment", placeholder="ex: Mon smoothie")
-        qty_pers = cpb.number_input("Quantité (g)", min_value=1, value=200, step=10, key="qty_pers")
-        repas_p  = cpc.selectbox("Repas", ["Petit-déjeuner","Déjeuner","Dîner","Collation"], index=1, key="repas_p")
-
-        st.caption("Valeurs pour 100 g (tu peux en remplir seulement quelques-unes) :")
-        m1, m2, m3, m4, m5 = st.columns(5)
-        prot100 = m1.number_input("Protéines (g/100g)", min_value=0.0, value=0.0, step=0.5)
-        gluc100 = m2.number_input("Glucides (g/100g)",  min_value=0.0, value=0.0, step=0.5)
-        lip100  = m3.number_input("Lipides (g/100g)",   min_value=0.0, value=0.0, step=0.5)
-        fib100  = m4.number_input("Fibres (g/100g)",    min_value=0.0, value=0.0, step=0.5)
-        ags100  = m5.number_input("AG saturés (g/100g)",min_value=0.0, value=0.0, step=0.5)
-
-        n1, n2, n3 = st.columns(3)
-        ala100 = n1.number_input("Oméga-3 ALA (g/100g)", min_value=0.0, value=0.0, step=0.1)
-        epa100 = n2.number_input("EPA (g/100g)",         min_value=0.0, value=0.0, step=0.1)
-        dha100 = n3.number_input("DHA (g/100g)",         min_value=0.0, value=0.0, step=0.1)
-
-        o1, o2 = st.columns(2)
-        o6100 = o1.number_input("Oméga-6 (LA) (g/100g)", min_value=0.0, value=0.0, step=0.1)
-        o9100 = o2.number_input("Oméga-9 (oléique) (g/100g)", min_value=0.0, value=0.0, step=0.1)
-
-        if st.button("➕ Ajouter cet aliment personnalisé"):
-            if nom_pers.strip():
-                kcal100 = prot100*4 + gluc100*4 + lip100*9
-                factor = qty_pers / 100.0
-                nutr = {
-                    "Énergie_kcal": kcal100 * factor,
-                    "Protéines_g":  prot100 * factor,
-                    "Glucides_g":   gluc100 * factor,
-                    "Lipides_g":    lip100  * factor,
-                    "Fibres_g":     fib100  * factor,
-                    "AG_saturés_g": ags100  * factor,
-                    "Acide_alpha-linolénique_W3_ALA_g": ala100 * factor,
-                    "EPA_g": epa100 * factor,
-                    "DHA_g": dha100 * factor,
-                    "Acide_linoléique_W6_LA_g": o6100 * factor,
-                    "Acide_oléique_W9_g": o9100 * factor,
-                }
-                insert_journal(date_sel.isoformat(), repas_p, nom_pers.strip(), qty_pers, nutr)
-                st.session_state["last_added_date"] = date_sel.isoformat()
-                st.success(f"Ajouté : {qty_pers} g de {nom_pers} ({repas_p})")
-
     st.markdown("### Lignes du jour")
     df_day = fetch_journal_by_date(date_sel.isoformat())
     if not df_day.empty:
-        preferred_order = ["date","repas","nom","quantite_g","Énergie_kcal","Protéines_g","Glucides_g","Lipides_g",
-                           "Fibres_g","AG_saturés_g","Acide_linoléique_W6_LA_g","Acide_oléique_W9_g",
-                           "Acide_alpha-linolénique_W3_ALA_g","EPA_g","DHA_g"]
-        cols = [c for c in preferred_order if c in df_day.columns] + [c for c in df_day.columns if c not in preferred_order]
-        df_show = df_day[cols].copy()
-        numcols = df_show.select_dtypes(include=[np.number]).columns
+        numcols = df_day.select_dtypes(include=[np.number]).columns
+        df_show = df_day.copy()
         df_show[numcols] = df_show[numcols].applymap(round1)
         st.dataframe(df_show.drop(columns=["id"]), use_container_width=True)
     else:
         st.dataframe(df_day, use_container_width=True)
 
-    if not df_day.empty:
-        st.markdown("#### Supprimer une ligne")
-        options = df_day[["id","repas","nom","quantite_g"]].copy()
-        options["label"] = options.apply(lambda r: f'#{int(r["id"])} — {r["repas"]}: {r["nom"]} ({round1(r["quantite_g"])} g)', axis=1)
-        sel_label = st.selectbox("Ligne à supprimer", options["label"].tolist())
-        sel_id = int(options.loc[options["label"].eq(sel_label), "id"].iloc[0])
-        if st.button("🗑️ Supprimer cette ligne"):
-            delete_journal_row(sel_id)
-            st.success(f"Ligne #{sel_id} supprimée.")
-            st.rerun()
+# ----- Bilan -----
+with tab_bilan:
+    st.subheader("Bilan")
 
-def unify_totals_for_date(date_iso: str) -> pd.Series:
-    df_today = fetch_journal_by_date(date_iso)
-    if not df_today.empty:
-        base_exclude = ["id","date","repas","nom","quantite_g"]
-        df_clean = drop_parasite_columns(df_today)
-        df_num = df_clean.drop(columns=[c for c in base_exclude if c in df_clean.columns], errors="ignore")
-        raw = df_num.sum(numeric_only=True)
-        return unify_totals_series(raw)
-    return pd.Series(dtype=float)
-
-# ===== Helpers Bilan =====
-def render_bilan_page():
-    st.subheader("📊 Bilan")
     default_bilan_date = dt.date.today()
     last_with = fetch_last_date_with_rows()
     if last_with and fetch_journal_by_date(default_bilan_date.isoformat()).empty:
@@ -746,44 +607,20 @@ def render_bilan_page():
             default_bilan_date = pd.to_datetime(last_with).date()
 
     date_bilan = st.date_input("Date", value=default_bilan_date, format="DD/MM/YYYY", key="date_bilan")
-    totals = unify_totals_for_date(date_bilan.isoformat())
-    df_day = fetch_journal_by_date(date_bilan.isoformat())
+    df_today = fetch_journal_by_date(date_bilan.isoformat())
+
+    if not df_today.empty:
+        base_exclude = ["id","date","repas","nom","quantite_g"]
+        df_clean = drop_parasite_columns(df_today)
+        df_num = df_clean.drop(columns=[c for c in base_exclude if c in df_clean.columns], errors="ignore")
+        raw = df_num.sum(numeric_only=True)
+        totals = unify_totals_series(raw)
+    else:
+        totals = pd.Series(dtype=float)
 
     targets_macro = st.session_state["targets_macro"].copy()
     targets_micro = st.session_state["targets_micro"].copy()
     profile_targets = st.session_state.get("profile_targets", get_profile_targets_cached())
-
-    # --- ALA depuis lignes du jour (priorité) + fuzzy + fallback 14e colonne si libellé ALA ---
-    def _looks_like_ala(colname: str) -> bool:
-        ck = canon_key(colname)
-        if "epa" in ck or "dha" in ck:
-            return False
-        return (("alpha" in ck and "linolen" in ck) or
-                ("omega3" in ck and "ala" in ck) or
-                ("w3" in ck and "ala" in ck) or
-                ck.endswith("alag") or ck == "alag")
-
-    def _ala_consumed_from_day(df: pd.DataFrame) -> float:
-        if df is None or df.empty: return 0.0
-        # 1) libellé exact connu
-        if "Acide_alpha-linolénique_W3_ALA_g" in df.columns:
-            return float(pd.to_numeric(df["Acide_alpha-linolénique_W3_ALA_g"], errors="coerce").fillna(0.0).sum())
-        # 2) fuzzy
-        ala_cols = [c for c in df.columns if _looks_like_ala(c)]
-        if ala_cols:
-            return float(pd.to_numeric(df[ala_cols], errors="coerce").fillna(0.0).sum().sum())
-        # 3) fallback colonne 14 (1-based) SI elle ressemble à l'ALA
-        try:
-            if df.shape[1] >= 14:
-                col14 = df.columns[13]  # 0-based
-                if _looks_like_ala(col14):
-                    return float(pd.to_numeric(df[col14], errors="coerce").fillna(0.0).sum())
-        except Exception:
-            pass
-        # 4) dernier secours : totaux
-        return float(totals.get("Acide_alpha-linolénique_W3_ALA_g", 0.0))
-
-    ala_from_day = _ala_consumed_from_day(df_day)
 
     MACRO_KEYS = {
         "Énergie":   ["Énergie_kcal","Energie_kcal","kcal","energie_kcal"],
@@ -795,6 +632,11 @@ def render_bilan_page():
         "AG saturés":["AG_saturés_g","Acides_gras_saturés_g","AG_satures_g"],
         "Oméga-9":   ["Acide_oléique_W9_g","Acide_oleique_W9_g"],
         "Oméga-6":   ["Acide_linoléique_W6_LA_g","Acide_linoleique_W6_LA_g"],
+        "Oméga-3 ALA":[
+            "Acide_alpha-linolénique_W3_ALA_g","Acide_alphalinolénique_W3_ALA_g","Acide_alpha_linolenique_W3_ALA_g",
+            "Omega3_ALA_g","ALA_g"
+        ],
+        "Omega3_total": ["Omega3_g","Omega3_total_g","Oméga-3_g","Oméga_3_g","W3_total_g"],
         "EPA":       ["EPA_g"],
         "DHA":       ["DHA_g"],
         "Sel":       ["Sel_g"],
@@ -804,85 +646,125 @@ def render_bilan_page():
         for key in keys:
             if key in totals.index and pd.notna(totals[key]):
                 return float(totals[key])
-        keyset = [canon_key(k) for k in keys]
+        target_keys = [canon_key(k) for k in keys]
         for idx in totals.index:
-            if canon_key(idx) in keyset and pd.notna(totals[idx]):
+            if canon_key(idx) in target_keys and pd.notna(totals[idx]):
                 return float(totals[idx])
         return 0.0
 
-    def consumed_value_for_strict(label: str) -> float:
+    def consumed_value_for(label: str) -> float:
+        if not isinstance(totals, pd.Series) or totals.empty: return 0.0
         base = macro_base_name(label)
+
         if base == "energie":
             p = float(totals.get("Protéines_g", totals.get("Proteines_g", 0.0)))
             g = float(totals.get("Glucides_g", 0.0))
             l = float(totals.get("Lipides_g", 0.0))
             return p*4 + g*4 + l*9
+
+        # Oméga-3 : conso = ALA + EPA + DHA si dispo, sinon total si présent
         if base == "ala":
-            return ala_from_day
-        mapping = {
-            "proteines":"Protéines","glucides":"Glucides","lipides":"Lipides","fibres":"Fibres","sucres":"Sucres",
-            "agsatures":"AG saturés","omega9":"Oméga-9","omega6":"Oméga-6","epa":"EPA","dha":"DHA","sel":"Sel"
-        }
-        if base in mapping:
-            return _any_of(MACRO_KEYS.get(mapping[base], []))
+            ala = _any_of(MACRO_KEYS["Oméga-3 ALA"])
+            epa = _any_of(MACRO_KEYS["EPA"])
+            dha = _any_of(MACRO_KEYS["DHA"])
+            total = ala + epa + dha
+            if total > 0:
+                return total
+            return _any_of(MACRO_KEYS.get("Omega3_total", []))
+
+        map_name = None
+        if base == "proteines": map_name = "Protéines"
+        elif base == "glucides": map_name = "Glucides"
+        elif base == "lipides": map_name = "Lipides"
+        elif base == "fibres": map_name = "Fibres"
+        elif base == "sucres": map_name = "Sucres"
+        elif base == "agsatures": map_name = "AG saturés"
+        elif base == "omega9": map_name = "Oméga-9"
+        elif base == "omega6": map_name = "Oméga-6"
+        elif base == "epa": map_name = "EPA"
+        elif base == "dha": map_name = "DHA"
+        elif base == "sel": map_name = "Sel"
+
+        if map_name:
+            return _any_of(MACRO_KEYS.get(map_name, []))
+
         if label in totals.index and pd.notna(totals[label]): return float(totals[label])
         for idx in totals.index:
             if canon_key(idx) == canon_key(label):
                 return float(totals[idx])
         return 0.0
 
-    def build_macros_df(targets_macro: pd.DataFrame, profile_targets: dict):
+    # ===== Table Macros (objectifs Excel-like + copie Oméga-3 depuis Profil) =====
+    def build_macros_df():
         p = st.session_state["profile"]
         xlt = excel_like_targets(p)
         df = targets_macro.copy()
+
         if df is None or df.empty or "Nutriment" not in df.columns:
             rows = [
-                {"Nutriment":"Énergie (calories)-kcal","Icône":"🔥"},
-                {"Nutriment":"Lipides-g","Icône":"🥑"},
-                {"Nutriment":"AG saturés-g","Icône":"🥓"},
-                {"Nutriment":"Acide_oléique_W9-g","Icône":"🫒"},
-                {"Nutriment":"Acide_linoléique_W6_LA-g","Icône":"🌻"},
-                {"Nutriment":"Oméga-3 (ALA)-g","Icône":"🌱"},
-                {"Nutriment":"EPA-g","Icône":"🐟"},
-                {"Nutriment":"DHA-g","Icône":"🧠"},
-                {"Nutriment":"Glucides-g","Icône":"🍞"},
-                {"Nutriment":"Sucres-g","Icône":"🍬"},
-                {"Nutriment":"Fibres-g","Icône":"🌾"},
-                {"Nutriment":"Protéines-g","Icône":"💪"},
-                {"Nutriment":"Sel-g","Icône":"🧂"},
+                {"Nutriment":"Énergie (calories)-kcal","Icône":"🔥","Fonction":"Source vitale","Bénéfice Santé":"Maintien poids & vitalité"},
+                {"Nutriment":"Lipides-g","Icône":"🥑","Fonction":"Énergie & hormones","Bénéfice Santé":"Cœur"},
+                {"Nutriment":"AG saturés-g","Icône":"🥓","Fonction":"Énergie rapide","Bénéfice Santé":"Éviter excès"},
+                {"Nutriment":"Acide_oléique_W9-g","Icône":"🫒","Fonction":"Mono-insaturé","Bénéfice Santé":"Cœur"},
+                {"Nutriment":"Acide_linoléique_W6_LA-g","Icône":"🌻","Fonction":"Polyinsaturé","Bénéfice Santé":"Peau"},
+                {"Nutriment":"Oméga-3 (ALA)-g","Icône":"🌱","Fonction":"Essentiel","Bénéfice Santé":"Cerveau"},
+                {"Nutriment":"EPA-g","Icône":"🐟","Fonction":"Oméga-3 marin","Bénéfice Santé":"Anti-inflammatoire"},
+                {"Nutriment":"DHA-g","Icône":"🧠","Fonction":"Oméga-3 marin","Bénéfice Santé":"Cerveau"},
+                {"Nutriment":"Glucides-g","Icône":"🍞","Fonction":"Carburant","Bénéfice Santé":"Énergie"},
+                {"Nutriment":"Sucres-g","Icône":"🍬","Fonction":"Énergie rapide","Bénéfice Santé":"Limiter"},
+                {"Nutriment":"Fibres-g","Icône":"🌾","Fonction":"Digestion","Bénéfice Santé":"Métabolisme"},
+                {"Nutriment":"Protéines-g","Icône":"💪","Fonction":"Construction","Bénéfice Santé":"Récup"},
+                {"Nutriment":"Sel-g","Icône":"🧂","Fonction":"Sodium","Bénéfice Santé":"Équilibre"},
             ]
             df = pd.DataFrame(rows)
+
         if "Objectif" not in df.columns: df["Objectif"] = np.nan
 
         def excel_objective_for_row(nutr_label: str) -> float | None:
             base = macro_base_name(str(nutr_label))
-            m = {
-                "energie":"energie_kcal","lipides":"lipides_g","agsatures":"agsatures_g","omega9":"omega9_g",
-                "omega6":"omega6_g","ala":"ala_w3_g","epa":"epa_g","dha":"dha_g","glucides":"glucides_g",
-                "sucres":"sucres_g","fibres":"fibres_g","proteines":"proteines_g","sel":"sel_g"
-            }.get(base)
-            return excel_like_targets(p)[m] if m else None
+            if base == "energie":   return xlt["energie_kcal"]
+            if base == "lipides":   return xlt["lipides_g"]
+            if base == "agsatures": return xlt["agsatures_g"]
+            if base == "omega9":    return xlt["omega9_g"]
+            if base == "omega6":    return xlt["omega6_g"]
+            if base == "ala":       return xlt["ala_w3_g"]
+            if base == "epa":       return xlt["epa_g"]
+            if base == "dha":       return xlt["dha_g"]
+            if base == "glucides":  return xlt["glucides_g"]
+            if base == "sucres":    return xlt["sucres_g"]
+            if base == "fibres":    return xlt["fibres_g"]
+            if base == "proteines": return xlt["proteines_g"]
+            if base == "sel":       return xlt["sel_g"]
+            return None
 
         df["Objectif"] = df["Nutriment"].apply(lambda n: excel_objective_for_row(str(n)) if str(n) else np.nan)
-        omega3_from_profile = float(profile_targets.get("ala_w3_g", excel_like_targets(st.session_state["profile"])["ala_w3_g"]))
+
+        # Copie exacte depuis Profil pour l'Oméga-3 (objectif ALA)
+        profile_targets = st.session_state.get("profile_targets", get_profile_targets_cached())
         is_ala_row = df["Nutriment"].apply(lambda n: macro_base_name(str(n)) == "ala")
+        omega3_from_profile = float(profile_targets.get("ala_w3_g", round1(xlt["ala_w3_g"])))
         df.loc[is_ala_row, "Objectif"] = omega3_from_profile
 
-        df["Consommée"] = df["Nutriment"].apply(consumed_value_for_strict)
+        # Consommée + %
+        df["Consommée"] = df["Nutriment"].apply(consumed_value_for)
         df["Objectif"]  = pd.to_numeric(df["Objectif"], errors="coerce").fillna(omega3_from_profile)
         df["Consommée"] = pd.to_numeric(df["Consommée"], errors="coerce").fillna(0.0)
+
         df["Objectif"]   = df["Objectif"].apply(round1)
         df["Consommée"]  = df["Consommée"].apply(round1)
         df["% objectif"] = percent(df["Consommée"], df["Objectif"]).apply(round1)
-        for c in ["Icône"]:
+
+        for c in ["Icône","Fonction","Bénéfice Santé"]:
             if c not in df.columns: df[c] = ""
             df[c] = df[c].fillna("")
         return df
 
-    macros_df = build_macros_df(st.session_state["targets_macro"].copy(), profile_targets)
+    macros_df = build_macros_df()
 
-    def render_donuts_grid(items, cols=5, height=205):
-        cfg = {"displaylogo": False, "responsive": True, "staticPlot": True}
+    # ===== Utilitaire d'affichage en grille (ultra-compact 2 colonnes) =====
+    def render_donuts_grid(items, cols_desktop=5, height=210):
+        cfg = {"displaylogo": False, "responsive": True}
+        cols = 2 if (MOBILE and ULTRA) else cols_desktop
         for i in range(0, len(items), cols):
             row_items = items[i:i+cols]
             row_cols = st.columns(len(row_items))
@@ -892,221 +774,142 @@ def render_bilan_page():
                     fig = donut(it["cons"], it["target"], it["title"], it.get("color","energie"), height=height)
                     st.plotly_chart(fig, config=cfg, use_container_width=True)
 
-    # === Macros
-    st.markdown("### 🌾 Macros principaux")
-    def val_pair(base_name, fallback):
-        md = macros_df.copy()
+    # ===== Donuts — Macros principaux =====
+    donut_h = 180 if (MOBILE and ULTRA) else (190 if MOBILE else 220)
+
+    def donut_vals(base_label: str, df_macros: pd.DataFrame, fallback: float):
+        if df_macros.empty or "Nutriment" not in df_macros.columns:
+            return 0.0, round1(fallback)
+        md = df_macros.copy()
         md["_base"] = md["Nutriment"].apply(macro_base_name)
-        sel = md[md["_base"].eq(base_name)]
-        if sel.empty: return 0.0, fallback
+        sel = md[md["_base"].eq(base_label)]
+        if sel.empty:
+            return 0.0, round1(fallback)
         row = sel.iloc[0]
         cons = pd.to_numeric(pd.Series([row.get("Consommée", 0)]), errors="coerce").fillna(0).iloc[0]
         obj  = pd.to_numeric(pd.Series([row.get("Objectif",  fallback)]), errors="coerce").fillna(fallback).iloc[0]
         return float(cons), round1(obj)
 
     xlt = excel_like_targets(st.session_state["profile"])
-    c1,t1 = val_pair("energie",   xlt["energie_kcal"])
-    c2,t2 = val_pair("proteines", xlt["proteines_g"])
-    c3,t3 = val_pair("glucides",  xlt["glucides_g"])
-    c4,t4 = val_pair("lipides",   xlt["lipides_g"])
-    c5,t5 = val_pair("fibres",    xlt["fibres_g"])
+    title_energy   = short_title("Énergie (kcal)", "Énergie", MOBILE)
+    title_prot     = short_title("Protéines (g)",   "Prot.",   MOBILE)
+    title_gluc     = short_title("Glucides (g)",    "Gluc.",   MOBILE)
+    title_lip      = short_title("Lipides (g)",     "Lip.",    MOBILE)
+    title_fib      = short_title("Fibres (g)",      "Fibres",  MOBILE)
 
-    render_donuts_grid([
-        {"title": "Énergie (kcal)", "cons": c1, "target": t1, "color": "energie"},
-        {"title": "Protéines (g)",  "cons": c2, "target": t2, "color": "proteines"},
-        {"title": "Glucides (g)",   "cons": c3, "target": t3, "color": "glucides"},
-        {"title": "Lipides (g)",    "cons": c4, "target": t4, "color": "lipides"},
-        {"title": "Fibres (g)",     "cons": c5, "target": t5, "color": "fibres"},
-    ])
+    c1,t1 = donut_vals("energie",   macros_df, xlt["energie_kcal"])
+    c2,t2 = donut_vals("proteines", macros_df, xlt["proteines_g"])
+    c3,t3 = donut_vals("glucides",  macros_df, xlt["glucides_g"])
+    c4,t4 = donut_vals("lipides",   macros_df, xlt["lipides_g"])
+    c5,t5 = donut_vals("fibres",    macros_df, xlt["fibres_g"])
 
-    # === Acides gras essentiels
-    st.markdown("### 🫒 Acides gras essentiels")
-    def donut_vals(base_label: str, fallback: float):
-        if macros_df.empty or "Nutriment" not in macros_df.columns:
-            return 0.0, round1(fallback)
-        md = macros_df.copy()
-        md["_base"] = md["Nutriment"].apply(macro_base_name)
-        sel = md[md["_base"].eq(base_label)]
-        if sel.empty: return 0.0, round1(fallback)
-        row = sel.iloc[0]
-        cons = pd.to_numeric(pd.Series([row.get("Consommée", 0)]), errors="coerce").fillna(0).iloc[0]
-        obj  = pd.to_numeric(pd.Series([row.get("Objectif",  fallback)]), errors="coerce").fillna(fallback).iloc[0]
-        return float(cons), round1(obj)
+    macro_items = [
+        {"title": title_energy, "cons": c1, "target": t1, "color": "energie"},
+        {"title": title_prot,   "cons": c2, "target": t2, "color": "proteines"},
+        {"title": title_gluc,   "cons": c3, "target": t3, "color": "glucides"},
+        {"title": title_lip,    "cons": c4, "target": t4, "color": "lipides"},
+        {"title": title_fib,    "cons": c5, "target": t5, "color": "fibres"},
+    ]
+    st.markdown("### Macros")
+    render_donuts_grid(macro_items, cols_desktop=5, height=donut_h)
 
-    a_c,  a_t  = donut_vals("ala",    xlt["ala_w3_g"])
-    epa_c,epa_t= donut_vals("epa",    xlt["epa_g"])
-    dha_c,dha_t= donut_vals("dha",    xlt["dha_g"])
-    la_c, la_t = donut_vals("omega6", xlt["omega6_g"])
-    o9_c, o9_t = donut_vals("omega9", xlt["omega9_g"])
+    # ===== Donuts — Acides gras (essentiels + Oméga-9) =====
+    st.markdown("### Omégas")
+    a_c,  a_t  = donut_vals("ala",    macros_df, xlt["ala_w3_g"])   # Oméga-3 total (conso) vs objectif ALA
+    epa_c,epa_t= donut_vals("epa",    macros_df, xlt["epa_g"])
+    dha_c,dha_t= donut_vals("dha",    macros_df, xlt["dha_g"])
+    la_c, la_t = donut_vals("omega6", macros_df, xlt["omega6_g"])   # LA (oméga-6)
+    o9_c, o9_t = donut_vals("omega9", macros_df, xlt["omega9_g"])   # Oméga-9
 
-    render_donuts_grid([
-        {"title": "Oméga-3 (ALA)", "cons": a_c,   "target": a_t,   "color":"omega3"},
-        {"title": "EPA (g)",       "cons": epa_c, "target": epa_t, "color":"epa"},
-        {"title": "DHA (g)",       "cons": dha_c, "target": dha_t, "color":"dha"},
-        {"title": "Oméga-6 (g)",   "cons": la_c,  "target": la_t,  "color":"omega6"},
-        {"title": "Oméga-9 (g)",   "cons": o9_c,  "target": o9_t,  "color":"omega9"},
-    ])
+    title_omega3 = short_title("Oméga-3 (objectif ALA) (g)", "Oméga-3 (ALA)", MOBILE)
+    omega_items = [
+        {"title": title_omega3, "cons": a_c,   "target": a_t,   "color":"omega3"},
+        {"title": "EPA (g)",    "cons": epa_c, "target": epa_t, "color":"epa"},
+        {"title": "DHA (g)",    "cons": dha_c, "target": dha_t, "color":"dha"},
+        {"title": "Oméga-6",    "cons": la_c,  "target": la_t,  "color":"omega6"},
+        {"title": "Oméga-9",    "cons": o9_c,  "target": o9_t,  "color":"omega9"},
+    ]
+    render_donuts_grid(omega_items, cols_desktop=5, height=donut_h)
 
-    # === À surveiller
-    st.markdown("### ⚠️ À surveiller")
-    sugars_c, sugars_t   = val_pair("sucres",    xlt["sucres_g"])
-    agsat_c,  agsat_t    = val_pair("agsatures", xlt["agsatures_g"])
-    sel_c,    sel_t      = val_pair("sel",       xlt["sel_g"])
-    render_donuts_grid([
-        {"title": "Sucres (g)",       "cons": sugars_c, "target": sugars_t, "color":"glucides"},
-        {"title": "AG saturés (g)",   "cons": agsat_c,  "target": agsat_t,  "color":"lipides"},
-        {"title": "Sel (g)",          "cons": sel_c,    "target": sel_t,    "color":"muted"},
-    ], cols=3, height=200)
+    # ===== Micros =====
+    st.markdown("### Micros")
+    if not targets_micro.empty and "Nutriment" in targets_micro.columns:
+        tmi = targets_micro.copy()
+        if "Objectif" not in tmi.columns or (pd.to_numeric(tmi["Objectif"], errors="coerce").fillna(0.0) == 0).all():
+            tmi["Objectif"] = build_objectif_robuste(tmi)
 
-    # ===== Micros
-    st.caption(f"<span class='dot' style='background:{COLORS['ok']}'></span>Objectif atteint  "
-               f"<span class='dot' style='background:{COLORS['warn']}'></span>En cours  "
-               f"<span class='dot' style='background:{COLORS['bad']}'></span>Insuffisant",
-               unsafe_allow_html=True)
+        def consumed_micro(r):
+            name, unit = parse_name_unit(str(r["Nutriment"]))
+            key = f"{name}_{normalize_unit(unit)}".replace(" ","_")
+            if isinstance(totals, pd.Series) and key in totals.index and pd.notna(totals[key]):
+                return float(totals[key])
+            for idx in totals.index:
+                if canon_key(idx) == canon_key(key):
+                    return float(totals[idx])
+            return 0.0
 
-    if targets_micro.empty or "Nutriment" not in targets_micro.columns:
-        st.info("Aucune ‘Cible micro’ chargée.")
-        return
+        tmi["Consommée"]  = tmi.apply(consumed_micro, axis=1)
+        tmi["Objectif"]   = tmi["Objectif"].apply(round1)
+        tmi["Consommée"]  = tmi["Consommée"].apply(round1)
+        tmi["% objectif"] = percent(tmi["Consommée"], tmi["Objectif"]).apply(round1)
 
-    tmi = targets_micro.copy()
-    if "Objectif" not in tmi.columns or (pd.to_numeric(tmi["Objectif"], errors="coerce").fillna(0.0) == 0).all():
-        tmi["Objectif"] = build_objectif_robuste(tmi)
+        def pct_color(p):
+            if pd.isna(p): return COLORS["warn"]
+            if p < 50: return COLORS["bad"]
+            if p < 100: return COLORS["warn"]
+            return COLORS["ok"]
 
-    def consumed_micro(r):
-        name, unit = parse_name_unit(str(r["Nutriment"]))
-        key = f"{name}_{normalize_unit(unit)}".replace(" ","_")
-        if isinstance(totals, pd.Series) and key in totals.index and pd.notna(totals[key]):
-            return float(totals[key])
-        for idx in totals.index:
-            if canon_key(idx) == canon_key(key):
-                return float(totals[idx])
-        return 0.0
-
-    tmi["Consommée"]  = tmi.apply(consumed_micro, axis=1)
-    tmi["Objectif"]   = tmi["Objectif"].apply(round1)
-    tmi["Consommée"]  = tmi["Consommée"].apply(round1)
-    tmi["% objectif"] = percent(tmi["Consommée"], tmi["Objectif"]).apply(round1)
-
-    # Vitamines : tri du plus consommé au moins consommé (DESC)
-    def is_vitamin(n: str) -> bool:
-        n = strip_accents(n).lower()
-        return n.startswith("vit") or "vitamine" in n
-
-    vit = tmi[tmi["Nutriment"].astype(str).apply(is_vitamin)].copy()
-    mino= tmi[~tmi["Nutriment"].astype(str).apply(is_vitamin)].copy()
-
-    if not vit.empty:
-        vit = vit.sort_values("% objectif", ascending=False)  # DESC demandé
-
-    if not mino.empty:
-        mino = mino.sort_values("% objectif", ascending=False)  # harmonisé
-
-    def pct_color(p):
-        if pd.isna(p): return COLORS["warn"]
-        if p < 50: return COLORS["bad"]
-        if p < 100: return COLORS["warn"]
-        return COLORS["ok"]
-
-    def micro_bar(df: pd.DataFrame, title: str):
-        if df.empty:
-            st.info(f"Aucune donnée pour {title.lower()}.")
-            return
-        df = df.copy()
-        xmax = float(max((df["Objectif"].max(), df["Consommée"].max()), default=0.0)) * 1.15 or 1.0
-        height = max(320, int(24*len(df)) + 110)
+        height = max(300, int((22 if (MOBILE and ULTRA) else 24)*len(tmi)) + (90 if (MOBILE and ULTRA) else 120))
         fig = go.Figure()
         fig.add_bar(
-            y=df["Nutriment"], x=df["Objectif"], name="Objectif", orientation="h",
+            y=tmi["Nutriment"], x=tmi["Objectif"], name="Objectif", orientation="h",
             marker_color=COLORS["objectif"], opacity=0.30,
             hovertemplate="Objectif: %{x:.1f}<extra></extra>"
         )
         fig.add_bar(
-            y=df["Nutriment"], x=df["Consommée"], name="Ingéré", orientation="h",
-            marker_color=[pct_color(v) for v in df["% objectif"]],
-            text=[f"{c:.1f}/{o:.1f} ({p:.0f}%)" for c,o,p in zip(df["Consommée"], df["Objectif"], df["% objectif"])],
+            y=tmi["Nutriment"], x=tmi["Consommée"], name="Ingéré", orientation="h",
+            marker_color=[pct_color(v) for v in tmi["% objectif"]],
+            text=[f"{c:.1f}/{o:.1f} ({p:.0f}%)" for c,o,p in zip(tmi["Consommée"], tmi["Objectif"], tmi["% objectif"])],
             textposition="outside", cliponaxis=False,
             hovertemplate="Ingéré: %{x:.1f}<extra></extra>"
         )
         fig.update_layout(
             barmode="overlay",
-            title=title,
-            xaxis_title="", yaxis_title="",
-            xaxis=dict(range=[0, xmax]),
-            height=height, margin=dict(l=6,r=6,t=36,b=8),
+            title="Micros — objectif vs ingéré" if not MOBILE else "Micros",
+            xaxis_title="Quantité", yaxis_title="",
+            height=height,
+            margin=dict(l=6,r=6,t=36,b=8),
             legend=dict(orientation="h", y=-0.18),
-            font=dict(size=13),
+            font=dict(size=12 if (MOBILE and ULTRA) else (13 if MOBILE else 14))
         )
-        st.plotly_chart(fig, config={"displaylogo": False, "responsive": True, "staticPlot": True}, use_container_width=True)
+        st.plotly_chart(fig, config={"displaylogo": False, "responsive": True}, use_container_width=True)
 
-    st.markdown("### 🍊 Vitamines")
-    micro_bar(vit,  "Vitamines — objectif vs ingéré")
+        tmi2 = tmi.copy()
+        cols = [c for c in ["Nutriment","Icône","Fonction","Bénéfice Santé","Objectif","Consommée","% objectif"] if c in tmi2.columns]
+        st.dataframe(tmi2[cols], use_container_width=True)
+    else:
+        st.info("Aucune ‘Cible micro’ chargée (onglet Excel manquant ou vide).")
 
-    st.markdown("### 🧂 Minéraux")
-    micro_bar(mino, "Minéraux — objectif vs ingéré")
+    # ===== Tableaux Macros & Totaux repas =====
+    st.markdown("#### ⚡ Macros (1 déc.)")
+    if not macros_df.empty:
+        macros_df_show = macros_df.copy()
+        cols = [c for c in ["Nutriment","Icône","Fonction","Bénéfice Santé","Objectif","Consommée","% objectif"] if c in macros_df_show.columns]
+        st.dataframe(macros_df_show[cols], use_container_width=True)
+    else:
+        st.info("Aucune ‘Cible Macro’ chargée. Les donuts utilisent les objectifs calculés (Excel-like).")
 
-# ===================== Onglet 4 — Alimentation (titres ajustés) =====================
-def render_alimentation_page():
-    st.subheader("🍽️ Alimentation")
+    st.markdown("#### Totaux par repas")
+    if not df_today.empty:
+        per_meal = df_today.groupby("repas")[[c for c in df_today.columns if c not in ["id","date","repas","nom","quantite_g"]]].sum(numeric_only=True).reset_index()
+        numcols = per_meal.select_dtypes(include=[np.number]).columns
+        per_meal[numcols] = per_meal[numcols].applymap(round1)
+        per_meal = per_meal.rename(columns={"Énergie_kcal":"Calories","Energie_kcal":"Calories"})
+        st.dataframe(per_meal, use_container_width=True)
+    else:
+        st.caption("Aucune ligne sur cette date. Ajoute des aliments dans l’onglet Journal.")
 
-    # Conseil du jour
-    last_date = fetch_last_date_with_rows() or dt.date.today().isoformat()
-    totals = unify_totals_for_date(last_date)
-    prof = st.session_state.get("profile_targets", get_profile_targets_cached())
-
-    def pct(cons, key):
-        c = float(cons or 0.0); t = float(prof.get(key, 0.0) or 0.0)
-        return 0.0 if t == 0 else c/t*100.0
-
-    sug = float(totals.get("Sucres_g", 0.0))
-    ags = float(totals.get("AG_saturés_g", totals.get("AG_satures_g", 0.0)))
-    fib = float(totals.get("Fibres_g", 0.0))
-
-    tips = []
-    if pct(sug,"sucres_g") >= 110: tips.append("Réduis les boissons sucrées : vise eau/thé/café non sucré au prochain repas.")
-    elif pct(sug,"sucres_g") >= 80: tips.append("Proche de la limite de sucres : opte pour un dessert fruité entier.")
-    if pct(ags,"agsatures_g") >= 110: tips.append("Trop d’AG saturés : remplace le beurre par l’huile d’olive.")
-    elif pct(ags,"agsatures_g") >= 80: tips.append("Attention AG saturés : préfère poisson/volaille à la charcuterie.")
-    if pct(fib,"fibres_g") < 60: tips.append("Boost fibres : ajoute légumes verts ou légumineuses au repas suivant.")
-    if not tips: tips = ["Belle journée d’équilibre 🎯 Continue sur cette lancée !"]
-    idx = dt.date.today().day % len(tips)
-    st.success("💡 " + tips[idx])
-
-    st.divider()
-
-    # Tables issues Excel
-    targets_macro = st.session_state.get("targets_macro", pd.DataFrame()).copy()
-    targets_micro = st.session_state.get("targets_micro", pd.DataFrame()).copy()
-
-    def show_excel_table(df: pd.DataFrame, title: str):
-        st.markdown(f"#### {title}")
-        if df.empty:
-            st.info("Données non disponibles (vérifie l’onglet Excel).")
-            return
-        cols = [c for c in ["Nutriment","Icône","Fonction","Bénéfice Santé"] if c in df.columns]
-        vis = df[cols].copy()
-        st.dataframe(vis, use_container_width=True)
-
-    if not targets_macro.empty:
-        show_excel_table(targets_macro, "🌾 Macro — rôles & bénéfices")
-    if not targets_micro.empty:
-        def is_vitamin(n: str) -> bool:
-            n = strip_accents(n).lower()
-            return n.startswith("vit") or "vitamine" in n
-        vit = targets_micro[targets_micro["Nutriment"].astype(str).apply(is_vitamin)].copy()
-        mino= targets_micro[~targets_micro["Nutriment"].astype(str).apply(is_vitamin)].copy()
-        if not vit.empty:
-            show_excel_table(vit,  "🍊 Vitamines — rôles & bénéfices")
-        if not mino.empty:
-            show_excel_table(mino, "🧂 Minéraux — rôles & bénéfices")
-
-# ===================== Tabs =====================
-tab_profile, tab_journal, tab_bilan, tab_food = st.tabs(["👤 Profil", "🧾 Journal", "📊 Bilan", "🍽️ Alimentation"])
-with tab_profile: render_profile_page()
-with tab_journal: render_journal_page()
-with tab_bilan:   render_bilan_page()
-with tab_food:    render_alimentation_page()
-
-# ===================== Export/Import (inchangé) =====================
+# ============ Export/Import journal ============
 st.markdown("### 💾 Export / Import")
 def fetch_all_journal() -> pd.DataFrame:
     conn = init_db()
@@ -1160,13 +963,13 @@ with cI:
         except Exception as e:
             st.error(f"Import impossible : {e}")
 
-# ===================== Diagnostic léger =====================
+# ============ Diagnostic ============
 with st.expander("🛠️ Diagnostic (ouvrir seulement si besoin)"):
-    st.write("Assets:", str(ASSETS_DIR), "exists:", ASSETS_DIR.exists())
-    try:
-        st.write("Assets list:", os.listdir(ASSETS_DIR) if ASSETS_DIR.exists() else "—")
-    except Exception as e:
-        st.write("Assets list error:", e)
-    st.write("Excel:", str(DEFAULT_EXCEL_PATH), "exists:", DEFAULT_EXCEL_PATH.exists())
-    st.write("Logo:", str(DEFAULT_LOGO_PATH), "exists:", DEFAULT_LOGO_PATH.exists())
-    st.write("Build:", VERSION)
+    foods = st.session_state["foods"]
+    st.write("Colonnes Liste (foods) :", list(foods.columns)[:30], "…")
+    if not foods.empty:
+        st.write("Exemples nutriments 100g :", [c for c in foods.columns if str(c).endswith("_100g")][:10])
+    st.write("Cible Macro : colonnes :", list(st.session_state["targets_macro"].columns))
+    st.write(st.session_state["targets_macro"].head(10))
+    st.write("Cible Micro : colonnes :", list(st.session_state["targets_micro"].columns))
+    st.write(st.session_state["targets_micro"].head(10))
