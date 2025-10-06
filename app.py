@@ -1,23 +1,22 @@
-# Totum, suivi nutritionnel — WebApp complète (profil, objectifs, repas, graphiques donut)
-# Lancer :
-#   pip install -r requirements.txt
-#   streamlit run app.py
+# Totum, suivi nutritionnel — WebApp (profil, objectifs, repas, donuts & barres)
+# Dépendances : streamlit pandas openpyxl numpy plotly
+# Lancer : streamlit run app.py
 
-import io
+import io, re, unicodedata
 import datetime as dt
 import pandas as pd
 import numpy as np
 import streamlit as st
 import plotly.graph_objects as go
+import plotly.express as px
 
 st.set_page_config(page_title="Totum, suivi nutritionnel", page_icon="🥗", layout="wide")
 
 # ==========================
-# Helpers
+# Helpers (robustes aux libellés)
 # ==========================
 def coerce_num(s):
-    if s is None:
-        return s
+    if s is None: return s
     s = s.astype(str).str.replace("\u00A0"," ", regex=False).str.replace(",",".", regex=False)
     ext = s.str.extract(r"([-+]?\d*\.?\d+)")[0]
     return pd.to_numeric(ext, errors="coerce")
@@ -25,6 +24,36 @@ def coerce_num(s):
 def safe_parse(xls, sheet):
     try: return xls.parse(sheet)
     except Exception: return None
+
+def strip_accents(text: str) -> str:
+    text = str(text or "")
+    return "".join(ch for ch in unicodedata.normalize("NFD", text) if unicodedata.category(ch) != "Mn")
+
+def canon(s: str) -> str:
+    """Canonise un libellé : minuscules, pas d’accents, unités/ponctuation supprimées."""
+    s = strip_accents(s).lower()
+    s = re.sub(r"\((?:mg|ug|µg|mcg|iu|g|kcal|calories?)\)", "", s)  # enlève unités entre ()
+    s = s.replace("_100g","").replace("/100g","")
+    s = s.replace("%","")
+    # synonymes fréquents
+    s = s.replace("calories", "kcal").replace("energie", "energie")
+    s = s.replace("proteins", "proteines").replace("protides", "proteines")
+    s = s.replace("carbs", "glucides").replace("hydrates de carbone", "glucides")
+    s = s.replace("fat", "lipides").replace("gras", "lipides")
+    s = re.sub(r"[^a-z0-9]+","", s)  # garde alphanum
+    return s
+
+def is_energy(name_canon: str) -> bool:
+    return ("energie" in name_canon) or ("kcal" in name_canon)
+
+def is_protein(name_canon: str) -> bool:
+    return "proteine" in name_canon
+
+def is_carb(name_canon: str) -> bool:
+    return "glucide" in name_canon
+
+def is_fat(name_canon: str) -> bool:
+    return "lipide" in name_canon
 
 def nutrient_cols(df):
     return [c for c in df.columns if str(c).endswith("_100g")]
@@ -44,50 +73,62 @@ def percent(num, den):
     den = pd.to_numeric(den, errors="coerce").replace(0, np.nan)
     return (num/den*100).round(1)
 
-def tdee_mifflin(sex, age, height_cm, weight_kg, activity):
-    if sex.lower().startswith("h"):
-        bmr = 10*weight_kg + 6.25*height_cm - 5*age + 5
-    else:
-        bmr = 10*weight_kg + 6.25*height_cm - 5*age - 161
-    factors = {"Sédentaire":1.2,"Léger (1-3x/sem)":1.375,"Modéré (3-5x/sem)":1.55,"Intense (6-7x/sem)":1.725,"Athlète (2x/jour)":1.9}
-    return bmr * factors.get(activity, 1.2)
-
 def donut(cons, target, title):
     cons = float(cons) if pd.notna(cons) else 0.0
-    target = float(target) if pd.notna(target) and target>0 else 0.0
+    target = float(target) if pd.notna(target) else 0.0
+    if target <= 0:
+        # Pas d’objectif -> anneau “info”
+        fig = go.Figure(data=[go.Pie(values=[1], labels=["Objectif manquant"], hole=0.6, textinfo="label")])
+        fig.update_layout(title=title, margin=dict(l=0,r=0,t=40,b=0), height=260, showlegend=False)
+        return fig
     rest = max(target - cons, 0.0)
-    vals = [cons, rest] if target>0 else [cons]
-    labels = ["Ingesté", "Restant"] if target>0 else ["Ingesté"]
+    vals = [cons, rest]
+    labels = ["Ingesté", "Restant"]
     fig = go.Figure(data=[go.Pie(values=vals, labels=labels, hole=0.6, textinfo="percent+label")])
-    fig.update_layout(title=title, margin=dict(l=0,r=0,t=40,b=0), height=260)
+    fig.update_layout(title=title + f" — {cons:.0f}/{target:.0f}", margin=dict(l=0,r=0,t=40,b=0), height=260, showlegend=False)
     return fig
+
+def first_match(total_index, label):
+    """Trouve une colonne des totaux qui correspond à label (tolérant)."""
+    want = canon(label)
+    for k in total_index:
+        ck = canon(k)
+        if ck == want:  # match strict canonique
+            return k
+    # fallback par catégorie
+    for k in total_index:
+        ck = canon(k)
+        if is_energy(want) and is_energy(ck): return k
+        if is_protein(want) and is_protein(ck): return k
+        if is_carb(want) and is_carb(ck): return k
+        if is_fat(want) and is_fat(ck): return k
+    # fallback par inclusion
+    for k in total_index:
+        if canon(label).split("g")[0] in canon(k):
+            return k
+    return None
 
 # ==========================
 # Session init
 # ==========================
 if "foods" not in st.session_state:
     st.session_state["foods"] = pd.DataFrame(columns=["nom"])
-
 if "targets_macro" not in st.session_state:
     st.session_state["targets_macro"] = pd.DataFrame(columns=["Nutriment","Objectif"])
-
 if "targets_micro" not in st.session_state:
     st.session_state["targets_micro"] = pd.DataFrame(columns=["Nutriment","Unité","Objectif"])
-
 if "log" not in st.session_state:
     st.session_state["log"] = pd.DataFrame(columns=["date","repas","nom","quantite_g"])
-
 if "profile" not in st.session_state:
     st.session_state["profile"] = {
-        "sexe": "Homme","age": 30,"taille_cm": 175.0,"poids_kg": 70.0,
-        "activite": "Modéré (3-5x/sem)","cibles_auto": False,"repartition_macros": (30,40,30)
+        "sexe":"Homme","age":30,"taille_cm":175.0,"poids_kg":70.0,
+        "activite":"Modéré (3-5x/sem)","cibles_auto":False,"repartition_macros":(30,40,30)
     }
-
 if "logo_bytes" not in st.session_state:
     st.session_state["logo_bytes"] = None
 
 # ==========================
-# Header (logo + titre)
+# Header
 # ==========================
 col_logo, col_title = st.columns([1, 6])
 with col_logo:
@@ -102,12 +143,10 @@ with col_title:
 st.sidebar.header("📥 Données")
 uploaded = st.sidebar.file_uploader("Importe ton Excel (.xlsx)", type=["xlsx"], help="Feuilles: Liste, Cible Macro, Cible micro H/F, Profils (optionnel)")
 logo_file = st.sidebar.file_uploader("Logo TOTUM (PNG/JPG)", type=["png","jpg","jpeg"])
-
 if logo_file is not None:
     st.session_state["logo_bytes"] = logo_file.read()
 
 p = st.session_state["profile"]
-
 st.sidebar.header("👤 Profil")
 p["sexe"] = st.sidebar.selectbox("Sexe", ["Homme","Femme"], index=0 if p["sexe"].lower().startswith("h") else 1)
 p["age"] = st.sidebar.number_input("Âge", min_value=10, max_value=100, value=int(p["age"]))
@@ -122,20 +161,22 @@ st.session_state["profile"] = p
 if uploaded:
     xls = pd.ExcelFile(uploaded)
 
-    # Liste aliments (3 500)
+    # 1) Liste aliments
     df_liste = safe_parse(xls, "Liste")
     if df_liste is not None and "nom" in df_liste.columns:
         cols = ["nom"] + nutrient_cols(df_liste)
         st.session_state["foods"] = df_liste[cols].copy()
+    else:
+        st.warning("Feuille 'Liste' introuvable ou colonne 'nom' absente.")
 
-    # Cibles Macro (prioritaires si présentes)
+    # 2) Cibles Macro (prioritaires)
     df_macro = safe_parse(xls, "Cible Macro")
     if df_macro is not None and set(["Nutriment","Ojectifs"]).issubset(df_macro.columns):
         tmac = df_macro[["Nutriment","Ojectifs"]].rename(columns={"Ojectifs":"Objectif"}).copy()
         tmac["Objectif"] = coerce_num(tmac["Objectif"])
         st.session_state["targets_macro"] = tmac
 
-    # Cibles Micro selon sexe
+    # 3) Cibles Micro selon sexe
     df_micro = safe_parse(xls, "Cible micro H" if p["sexe"]=="Homme" else "Cible micro F")
     if df_micro is not None and "Nutriment" in df_micro.columns and "Ojectifs" in df_micro.columns:
         tm = df_micro[["Nutriment","Ojectifs"] + (["Unité"] if "Unité" in df_micro.columns else [])].copy()
@@ -144,9 +185,11 @@ if uploaded:
         if "Unité" not in tm.columns: tm["Unité"] = ""
         st.session_state["targets_micro"] = tm
 
-# Si l’utilisateur veut des cibles auto (et pas de feuille Cible Macro), on calcule depuis le profil
+# Si cibles auto (et pas de Cible Macro)
 if p["cibles_auto"] and (st.session_state["targets_macro"].empty or not uploaded):
-    kcal = tdee_mifflin(p["sexe"], p["age"], p["taille_cm"], p["poids_kg"], p["activite"])
+    kcal = (10*float(p["poids_kg"]) + 6.25*float(p["taille_cm"]) - 5*int(p["age"]) + (5 if p["sexe"].lower().startswith("h") else -161))
+    factors = {"Sédentaire":1.2,"Léger (1-3x/sem)":1.375,"Modéré (3-5x/sem)":1.55,"Intense (6-7x/sem)":1.725,"Athlète (2x/jour)":1.9}
+    kcal *= factors.get(p["activite"],1.2)
     pr, gc, ft = p["repartition_macros"]
     st.session_state["targets_macro"] = pd.DataFrame([
         {"Nutriment":"Énergie_kcal","Objectif": round(kcal)},
@@ -160,28 +203,21 @@ targets_macro = st.session_state["targets_macro"]
 targets_micro = st.session_state["targets_micro"]
 
 # ==========================
-# Saisie (mobile-friendly) : date/repas → recherche → quantité → ajouter
+# Saisie : une seule ligne (selectbox avec saisie)
 # ==========================
 st.subheader("🧾 Journal du jour")
-c_date, c_repas = st.columns(2)
+c_date, c_repas, c_qty, c_add = st.columns([1,1,1,1])
 today = c_date.date_input("Date", value=dt.date.today(), format="DD/MM/YYYY")
 repas = c_repas.selectbox("Repas", ["Petit-déjeuner","Déjeuner","Dîner","Collation"])
+qty = c_qty.number_input("Quantité (g)", min_value=1, value=150, step=10)
 
-search = st.text_input("Rechercher un aliment (saisis quelques lettres)")
 if not foods.empty:
-    base_list = foods["nom"].astype(str)
-    if search:
-        opts = base_list[base_list.str.contains(search, case=False, na=False)].tolist()
-    else:
-        opts = base_list.head(1000).tolist()
-    chosen = st.selectbox("Aliment", options=opts if opts else ["(aucun résultat)"])
+    chosen = st.selectbox("Aliment (tape pour chercher puis Entrée)", options=foods["nom"].astype(str).tolist())
 else:
     chosen = st.selectbox("Aliment", options=["(liste vide)"])
 
-col_qty, col_add = st.columns([1,1])
-qty = col_qty.number_input("Quantité (g)", min_value=1, value=150, step=10)
-if col_add.button("➕ Ajouter"):
-    if chosen not in ["(aucun résultat)","(liste vide)"] and not foods.empty:
+if c_add.button("➕ Ajouter"):
+    if chosen not in ["(liste vide)"] and not foods.empty:
         row = foods.loc[foods["nom"]==chosen]
         if not row.empty:
             row = row.iloc[0]
@@ -191,6 +227,7 @@ if col_add.button("➕ Ajouter"):
             st.session_state["log"] = pd.concat([st.session_state["log"], pd.DataFrame([entry])], ignore_index=True)
             st.success(f"Ajouté : {qty} g de {chosen} ({repas})")
 
+# Aliment personnalisé (optionnel)
 with st.expander("➕ Créer un aliment personnalisé"):
     c1,c2,c3,c4 = st.columns(4)
     new_name = c1.text_input("Nom de l’aliment")
@@ -224,80 +261,112 @@ else:
     st.info("Ajoute des aliments pour remplir le journal.")
 
 # ==========================
-# Rapport du jour + Objectifs (avec donuts)
+# Rapport du jour & % objectifs (DONUTS + TABLES + BARRES MICROS)
 # ==========================
 st.subheader("📊 Rapport journalier & % objectifs")
 log = st.session_state["log"]
 if not log.empty:
     day = log.loc[log["date"]==today].copy()
-
     if day.empty:
         st.caption("Aucune saisie aujourd’hui.")
     else:
         nutr_cols = [c for c in day.columns if c not in ["date","repas","nom","quantite_g"]]
-        per_meal = day.groupby("repas")[nutr_cols].sum(numeric_only=True).reset_index()
-
-        st.markdown("#### Totaux par repas")
-        show_meal = per_meal.rename(columns={"Énergie_kcal":"Calories","Energie_kcal":"Calories"})
-        st.dataframe(show_meal, width="stretch")
-
         totals = day[nutr_cols].sum(numeric_only=True)
 
-        # Récup cibles
-        def target_for(nm_regex):
+        # Totaux par repas (table)
+        per_meal = day.groupby("repas")[nutr_cols].sum(numeric_only=True).reset_index()
+        show_meal = per_meal.rename(columns={"Énergie_kcal":"Calories","Energie_kcal":"Calories"})
+        st.markdown("#### Totaux par repas")
+        st.dataframe(show_meal, width="stretch")
+
+        # ----- Consommations MACROS (robuste via canon) -----
+        # On essaie de trouver directement, sinon fallback 4/4/9
+        energy_key = None
+        protein_key = None
+        carb_key = None
+        fat_key = None
+        for k in totals.index:
+            ck = canon(k)
+            if energy_key is None and is_energy(ck): energy_key = k
+            if protein_key is None and is_protein(ck): protein_key = k
+            if carb_key is None and is_carb(ck): carb_key = k
+            if fat_key is None and is_fat(ck): fat_key = k
+
+        kcal = float(totals.get(energy_key, np.nan)) if energy_key else np.nan
+        prot = float(totals.get(protein_key, np.nan)) if protein_key else np.nan
+        carb = float(totals.get(carb_key, np.nan)) if carb_key else np.nan
+        fat  = float(totals.get(fat_key, np.nan)) if fat_key else np.nan
+
+        # Fallback énergie = 4P + 4G + 9L si Énergie absente
+        if pd.isna(kcal) and (pd.notna(prot) or pd.notna(carb) or pd.notna(fat)):
+            kcal = ( (prot if pd.notna(prot) else 0)*4
+                   + (carb if pd.notna(carb) else 0)*4
+                   + (fat  if pd.notna(fat)  else 0)*9 )
+
+        # ----- Objectifs (prend Cible Macro, sinon auto déjà calculé) -----
+        def target_for(regex):
             if targets_macro.empty: return np.nan
-            m = targets_macro.loc[targets_macro["Nutriment"].str.contains(nm_regex, case=False, na=False)]
-            return float(m["Objectif"].iloc[0]) if not m.empty else np.nan
+            m = targets_macro.copy()
+            m["canon"] = m["Nutriment"].map(canon)
+            sel = m.loc[m["canon"].str.contains(regex, na=False)]
+            return float(sel["Objectif"].iloc[0]) if not sel.empty else np.nan
 
-        kcal = totals.get("Énergie_kcal", np.nan)
-        if pd.isna(kcal): kcal = totals.get("Energie_kcal", np.nan)
-        prot = totals.get("Protéines_g", totals.get("Proteines_g", np.nan))
-        carb = totals.get("Glucides_g", np.nan)
-        fat  = totals.get("Lipides_g", np.nan)
+        t_kcal = target_for("energie|kcal")
+        t_p = target_for("proteine")
+        t_c = target_for("glucide")
+        t_f = target_for("lipide")
 
-        t_kcal = target_for("énergie|energie|kcal")
-        t_p = target_for("protéines|proteines")
-        t_c = target_for("glucides|carb")
-        t_f = target_for("lipides|fat|gras")
-
+        # Métriques
         c1,c2,c3,c4 = st.columns(4)
         c1.metric("Calories", f"{(kcal or 0):.0f}", f"/ {t_kcal:.0f}" if pd.notna(t_kcal) else "")
         c2.metric("Protéines (g)", f"{(prot or 0):.0f}", f"/ {t_p:.0f}" if pd.notna(t_p) else "")
         c3.metric("Glucides (g)", f"{(carb or 0):.0f}", f"/ {t_c:.0f}" if pd.notna(t_c) else "")
         c4.metric("Lipides (g)", f"{(fat or 0):.0f}", f"/ {t_f:.0f}" if pd.notna(t_f) else "")
 
-        # Donuts % d'objectifs
-        st.markdown("#### 🎯 % d’objectifs atteints (anneaux)")
+        # Donuts (% objectifs) — plus de “100% par défaut”
+        st.markdown("#### 🎯 % d’objectifs (donuts)")
         d1,d2,d3,d4 = st.columns(4)
-        d1.plotly_chart(donut(kcal or 0, t_kcal or 0, "Énergie (kcal)"), use_container_width=True)
-        d2.plotly_chart(donut(prot or 0, t_p or 0, "Protéines (g)"), use_container_width=True)
-        d3.plotly_chart(donut(carb or 0, t_c or 0, "Glucides (g)"), use_container_width=True)
-        d4.plotly_chart(donut(fat or 0,  t_f or 0, "Lipides (g)"), use_container_width=True)
+        d1.plotly_chart(donut(kcal, t_kcal, "Énergie (kcal)"), use_container_width=True)
+        d2.plotly_chart(donut(prot, t_p, "Protéines (g)"), use_container_width=True)
+        d3.plotly_chart(donut(carb, t_c, "Glucides (g)"), use_container_width=True)
+        d4.plotly_chart(donut(fat,  t_f, "Lipides (g)"), use_container_width=True)
 
-        # % objectifs Tableaux (texte)
+        # ----- Tableau % Objectifs – Macros (join via canon) -----
         if not targets_macro.empty:
-            cons = []
-            for _, r in targets_macro.iterrows():
-                n = str(r["Nutriment"])
-                match = [k for k in totals.index if n.split("_")[0].lower() in k.lower()]
-                cons_val = float(totals[match[0]]) if match else 0.0
-                cons.append({"Nutriment": n, "Objectif": float(r["Objectif"]), "Consommée": cons_val})
-            dfM = pd.DataFrame(cons)
-            dfM["% objectif"] = percent(dfM["Consommée"], dfM["Objectif"])
+            m = targets_macro.copy()
+            m["canon"] = m["Nutriment"].map(canon)
+            # Conso par canon depuis totals
+            totals_map = {canon(k): float(v) for k, v in totals.items()}
+            m["Consommée"] = m["canon"].map(lambda c:
+                totals_map.get(c, 
+                    totals_map.get("energiekcal") if is_energy(c) else
+                    totals_map.get("proteinesg") if is_protein(c) else
+                    totals_map.get("glucidesg") if is_carb(c) else
+                    totals_map.get("lipidesg") if is_fat(c) else 0.0
+                )
+            ).fillna(0.0)
+            m["% objectif"] = percent(m["Consommée"], m["Objectif"])
+            showM = m[["Nutriment","Objectif","Consommée","% objectif"]]
             st.markdown("#### ⚡ % Objectifs – Macros")
-            st.dataframe(dfM, width="stretch")
+            st.dataframe(showM, width="stretch")
 
+        # ----- Micros : tableau + barres (join via canon) -----
         if not targets_micro.empty:
-            cons = []
-            for _, r in targets_micro.iterrows():
-                n = str(r["Nutriment"])
-                match = [k for k in totals.index if n.split("_")[0].lower() in k.lower()]
-                cons_val = float(totals[match[0]]) if match else 0.0
-                cons.append({"Nutriment": n, "Unité": r.get("Unité",""), "Objectif": float(r["Objectif"]), "Consommée": cons_val})
-            dfm = pd.DataFrame(cons)
-            dfm["% objectif"] = percent(dfm["Consommée"], dfm["Objectif"])
-            st.markdown("#### 🧪 % Objectifs – Micros")
-            st.dataframe(dfm, width="stretch")
+            tm = targets_micro.copy()
+            tm["canon"] = tm["Nutriment"].map(canon)
+            totals_map = {canon(k): float(v) for k, v in totals.items()}
+            tm["Consommée"] = tm["canon"].map(lambda c: totals_map.get(c, 0.0)).fillna(0.0)
+            tm["% objectif"] = percent(tm["Consommée"], tm["Objectif"])
+            showm = tm[["Nutriment","Unité","Objectif","Consommée","% objectif"]]
+            st.markdown("#### 🧪 Micros – Consommation vs Objectif")
+            st.dataframe(showm, width="stretch")
+
+            fig = go.Figure()
+            fig.add_bar(name="Consommée", x=showm["Nutriment"], y=showm["Consommée"], text=showm["Consommée"])
+            fig.add_bar(name="Objectif",   x=showm["Nutriment"], y=showm["Objectif"],   text=showm["Objectif"], opacity=0.4)
+            fig.update_layout(barmode="group", title="Micronutriments – Consommée vs Objectif", xaxis_tickangle=-30,
+                              height=420, margin=dict(l=0,r=0,t=40,b=0))
+            st.plotly_chart(fig, use_container_width=True)
 else:
     st.caption("Aucune saisie aujourd’hui.")
 
@@ -333,4 +402,4 @@ if imp_file is not None:
         st.error(f"Import impossible : {e}")
 
 st.markdown("---")
-st.caption("Astuce : pour que les objectifs viennent de ton fichier, fournis la feuille 'Cible Macro'. Sinon coche 'Cibles automatiques' (profil).")
+st.caption("Astuce : pour des objectifs venant de ton fichier, fournis 'Cible Macro'. Sinon, active les cibles automatiques (Profil).")
