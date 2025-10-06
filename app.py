@@ -1,6 +1,5 @@
 # Totum — Suivi nutritionnel
-# Fix ALA (somme stricte col. 'Acide_alpha-linolénique_W3_ALA_g' + fuzzy robust)
-# Tri vitamines = du plus consommé au moins consommé (comme minéraux), titres Alimentation ajustés
+# Fix ALA (somme robuste + conversion numérique préalable) & fond UI renforcé
 from __future__ import annotations
 import os, io, re, json, sqlite3, unicodedata, datetime as dt, base64
 from pathlib import Path
@@ -10,7 +9,7 @@ import streamlit as st
 import plotly.graph_objects as go
 import openpyxl
 
-VERSION = "v2025-10-06-ALA-fix-final-02"
+VERSION = "v2025-10-06-ALA-solid-UIbg-01"
 
 st.set_page_config(
     page_title="Totum — suivi nutritionnel",
@@ -118,7 +117,7 @@ def clean_liste(df_liste: pd.DataFrame) -> pd.DataFrame:
 
     # fusion colonnes quasi identiques
     dup_groups = {}
-    for c in [x for x in df.columns if x.endswith("_100g")]:
+    for c in [x for x in df.columns if c.endswith("_100g")]:
         key = canon_key(c)
         dup_groups.setdefault(key, []).append(c)
     for cols in dup_groups.values():
@@ -140,7 +139,7 @@ def calc_from_food_row(row: pd.Series, qty_g: float) -> dict:
 
 # ============ Couleurs ============
 COLORS = {
-    "brand":    "#ff7f3f",
+    "brand":    "#ff7f3f",   # orange Totum
     "brand2":   "#ffb347",
     "ink":      "#0d1b1e",
     "muted":    "#5f6b76",
@@ -165,12 +164,15 @@ COLORS = {
 def apply_mobile_css_and_topbar(logo_b64: str | None):
     st.markdown(f"""
     <style>
+    /* Masque la barre Streamlit et force le fond partout */
     [data-testid="stToolbar"], [data-testid="stDecoration"], [data-testid="stStatusWidget"], header, footer {{ display: none !important; }}
-    html, body, [data-testid="stAppViewContainer"] {{
+    html, body, .stApp, [data-testid="stAppViewContainer"] {{
       font-size: 15.5px;
-      background: linear-gradient(180deg, #fffaf5 0%, #fff5ea 80%);
+      background: linear-gradient(180deg, #fff4ea 0%, #fffaf5 60%, #ffffff 100%) !important;
+      min-height: 100vh;
     }}
     .block-container {{ padding-top: .8rem; padding-bottom: .8rem; max-width: 1100px; }}
+
     .topbar {{
       position: sticky; top: 0; z-index: 100;
       background: linear-gradient(135deg, #fff0e5 0%, #fffaf6 40%, #ffffff 100%);
@@ -188,6 +190,35 @@ def apply_mobile_css_and_topbar(logo_b64: str | None):
     }}
     .topbar-title {{ font-weight: 900; color: {COLORS['ink']}; font-size: clamp(22px, 3vw, 30px); margin: 0; line-height: 1.05; }}
     .topbar-sub {{ margin-top: .15rem; color: {COLORS['muted']}; font-size: .98rem; }}
+
+    /* Onglets : boutons larges et stylés */
+    [data-baseweb="tab-list"] {{
+      width: 100%;
+      display: grid !important;
+      grid-template-columns: 1fr 1fr 1fr 1fr;
+      gap: .35rem;
+      margin: .6rem 0 .2rem 0;
+    }}
+    [data-baseweb="tab-list"] button {{
+      width: 100%;
+      background: linear-gradient(180deg, #ffffff 0%, #fff7ef 95%);
+      border-radius: 12px !important;
+      box-shadow: 0 2px 12px rgba(0,0,0,.06);
+      border: 1px solid rgba(0,0,0,.06);
+      padding: .55rem .6rem !important;
+      font-weight: 800;
+      color: {COLORS['ink']};
+    }}
+    [data-baseweb="tab-highlight"] {{ background: linear-gradient(90deg, {COLORS['brand']}, {COLORS['brand2']}); height: 3px; }}
+
+    /* Boutons d'action */
+    .stButton>button {{
+      background: linear-gradient(90deg, {COLORS['brand']}, {COLORS['brand2']});
+      border: 0; color: #fff; font-weight: 900;
+      box-shadow: 0 8px 18px rgba(255,127,63,.28);
+      border-radius: 12px;
+    }}
+
     .donut-title {{ font-size: 14px; font-weight: 800; margin-bottom: 0.15rem; color: {COLORS['ink']}; }}
     .dot {{ display:inline-block; width:.8em; height:.8em; border-radius:50%; margin-right:.35em; vertical-align: middle; }}
     </style>
@@ -255,7 +286,6 @@ PREFERRED_NAMES = {
     "alag":       "Acide_alpha-linolénique_W3_ALA_g",
     "epag": "EPA_g", "dhag": "DHA_g",
     "sucresg":"Sucres_g", "selg":"Sel_g",
-    "omega3g": "Omega3_g", "omega3totalg": "Omega3_total_g", "w3totalg":"W3_total_g",
 }
 
 def unify_totals_series(s: pd.Series) -> pd.Series:
@@ -678,10 +708,15 @@ def render_journal_page():
             st.rerun()
 
 def unify_totals_for_date(date_iso: str) -> pd.Series:
+    """Somme **après** conversion numérique pour toutes les colonnes nutriments."""
     df_today = fetch_journal_by_date(date_iso)
     if not df_today.empty:
-        base_exclude = ["id","date","repas","nom","quantite_g"]
-        df_clean = drop_parasite_columns(df_today)
+        base_exclude = {"id","date","repas","nom","quantite_g"}
+        df_clean = drop_parasite_columns(df_today).copy()
+        # conversion numérique robuste
+        for c in df_clean.columns:
+            if c not in base_exclude:
+                df_clean[c] = pd.to_numeric(df_clean[c], errors="coerce")
         df_num = df_clean.drop(columns=[c for c in base_exclude if c in df_clean.columns], errors="ignore")
         raw = df_num.sum(numeric_only=True)
         return unify_totals_series(raw)
@@ -702,38 +737,37 @@ def render_bilan_page():
             default_bilan_date = pd.to_datetime(last_with).date()
 
     date_bilan = st.date_input("Date", value=default_bilan_date, format="DD/MM/YYYY", key="date_bilan")
-    totals = unify_totals_for_date(date_bilan.isoformat())
     df_day = fetch_journal_by_date(date_bilan.isoformat())
+    totals = unify_totals_for_date(date_bilan.isoformat())
 
     targets_macro = st.session_state["targets_macro"].copy()
     targets_micro = st.session_state["targets_micro"].copy()
     profile_targets = st.session_state.get("profile_targets", get_profile_targets_cached())
 
-    # --- ALA robuste depuis les lignes du jour (exact + fuzzy + fallback) ---
+    # --- ALA robuste depuis lignes du jour + fallback totaux ---
     def _looks_like_ala(colname: str) -> bool:
         ck = canon_key(colname)
         if "epa" in ck or "dha" in ck:
             return False
         return (("alpha" in ck and "linolen" in ck) or
                 (("omega3" in ck or "w3" in ck) and "ala" in ck) or
-                ck.endswith("alag") or ck == "alag")
+                ck.endswith("alag") or ck == "alag" or "acidealphalinoleniquew3alag" in ck)
 
     def _ala_consumed_from_day(df: pd.DataFrame, totals_series: pd.Series) -> float:
         # 1) exact label prioritaire
+        if df is not None and not df.empty and "Acide_alpha-linolénique_W3_ALA_g" in df.columns:
+            return float(pd.to_numeric(df["Acide_alpha-linolénique_W3_ALA_g"], errors="coerce").fillna(0.0).sum())
+        # 2) fuzzy sur toutes les colonnes
         if df is not None and not df.empty:
-            if "Acide_alpha-linolénique_W3_ALA_g" in df.columns:
-                return float(pd.to_numeric(df["Acide_alpha-linolénique_W3_ALA_g"], errors="coerce").fillna(0.0).sum())
-            # 2) fuzzy sur toutes les colonnes
             ala_cols = [c for c in df.columns if _looks_like_ala(c)]
             if ala_cols:
                 s = pd.DataFrame(df[ala_cols]).apply(pd.to_numeric, errors="coerce").fillna(0.0)
                 return float(s.sum(numeric_only=True).sum())
-        # 3) fallback totaux s’il existe une clé ALA
+        # 3) fallback totaux : clés ressemblant à ALA
         if isinstance(totals_series, pd.Series) and not totals_series.empty:
             candidates = [k for k in totals_series.index if _looks_like_ala(k)]
             if candidates:
                 return float(pd.to_numeric(totals_series[candidates], errors="coerce").fillna(0.0).sum())
-            # dernier filet : clé normalisée connue
             if "Acide_alpha-linolénique_W3_ALA_g" in totals_series.index:
                 return float(pd.to_numeric(pd.Series([totals_series["Acide_alpha-linolénique_W3_ALA_g"]]), errors="coerce").fillna(0.0).iloc[0])
         return 0.0
@@ -949,9 +983,9 @@ def render_bilan_page():
     vit = tmi[tmi["Nutriment"].astype(str).apply(is_vitamin)].copy()
     mino= tmi[~tmi["Nutriment"].astype(str).apply(is_vitamin)].copy()
 
+    # Tri DESC : du plus consommé (en % objectif) au moins consommé
     if not vit.empty:
         vit = vit.sort_values("% objectif", ascending=False)
-
     if not mino.empty:
         mino = mino.sort_values("% objectif", ascending=False)
 
@@ -998,11 +1032,11 @@ def render_bilan_page():
     st.markdown("### 🧂 Minéraux")
     micro_bar(mino, "Minéraux — objectif vs ingéré")
 
-# ===================== Onglet 4 — Alimentation =====================
+# ===================== Onglet 4 — Alimentation (inchangé) =====================
 def render_alimentation_page():
     st.subheader("🍽️ Alimentation")
 
-    # Conseil du jour
+    # Conseil du jour (simple & motivant)
     last_date = fetch_last_date_with_rows() or dt.date.today().isoformat()
     totals = unify_totals_for_date(last_date)
     prof = st.session_state.get("profile_targets", get_profile_targets_cached())
