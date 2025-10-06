@@ -1,5 +1,5 @@
 # Totum — Suivi nutritionnel
-# UI facelift: fond blanc global (clair), dark mode auto, boutons orange conservés
+# UI header sans encadré + ALA encore plus robuste (+ diagnostic)
 from __future__ import annotations
 import os, io, re, json, sqlite3, unicodedata, datetime as dt, base64
 from pathlib import Path
@@ -9,7 +9,7 @@ import streamlit as st
 import plotly.graph_objects as go
 import openpyxl
 
-VERSION = "v2025-10-06-ui-light-dark-keep-orange-01"
+VERSION = "v2025-10-06-ui-header-flat-ala-robust-02"
 
 st.set_page_config(
     page_title="Totum — suivi nutritionnel",
@@ -160,7 +160,7 @@ COLORS = {
     "bad":       "#d9534f",
 }
 
-# ============ Mobile-first CSS + Topbar (light + dark auto) ============
+# ============ Mobile-first CSS + Header plat ============
 def apply_mobile_css_and_topbar(logo_b64: str | None):
     st.markdown(f"""
     <style>
@@ -169,25 +169,16 @@ def apply_mobile_css_and_topbar(logo_b64: str | None):
       display: none !important;
     }}
 
-    /* Thème clair par défaut : fond blanc partout */
+    /* Thème clair par défaut ; dark auto si device en sombre */
     :root {{
       --bg: #ffffff;
-      --card: #ffffff;
       --ink: {COLORS['ink']};
       --muted: {COLORS['muted']};
-      --border: rgba(0,0,0,.06);
-      --shadow: 0 10px 28px rgba(0,0,0,.08);
+      --border: rgba(0,0,0,0);
     }}
-
-    /* Mode sombre auto si l’appareil est en dark */
     @media (prefers-color-scheme: dark) {{
       :root {{
-        --bg: #0f1216;
-        --card: #151a20;
-        --ink: #f6f7f8;
-        --muted: #b9c0c7;
-        --border: rgba(255,255,255,.08);
-        --shadow: 0 10px 28px rgba(0,0,0,.5);
+        --bg: #0f1216; --ink: #f6f7f8; --muted: #b9c0c7; --border: rgba(255,255,255,0);
       }}
     }}
 
@@ -197,35 +188,24 @@ def apply_mobile_css_and_topbar(logo_b64: str | None):
       font-size: 15.5px;
       min-height: 100vh;
     }}
+    .block-container {{ padding-top: .8rem; padding-bottom: .8rem; max-width: 1100px; }}
 
-    .block-container {{
-      padding-top: .8rem; padding-bottom: .8rem; max-width: 1100px;
-    }}
-
-    /* Cartes et éléments */
-    .card, .topbar {{
-      background: var(--card);
-      border: 1px solid var(--border);
-      border-radius: 16px;
-      box-shadow: var(--shadow);
-    }}
-
-    /* TOP BAR */
+    /* Header plat, sans encadré ni ombre */
     .topbar {{
       position: sticky; top: 0; z-index: 100;
-      padding: .55rem .9rem; margin-bottom: .6rem;
+      padding: .25rem 0 .6rem 0; margin: 0 0 .2rem 0;
+      background: transparent; border: 0; box-shadow: none;
     }}
     .topbar-grid {{ display: grid; grid-template-columns: auto 1fr; align-items: center; gap: .8rem; }}
     .topbar-logo {{
-      width: 110px; height: 110px; min-width: 110px;
-      border-radius: 14px; object-fit: contain; background:#fff; padding:.45rem;
-      filter: drop-shadow(0 10px 24px rgba(255,127,63,.40));
-      border: 1px solid var(--border);
+      width: 120px; height: 120px; min-width: 120px;
+      object-fit: contain; background: transparent; padding: 0;
+      border: 0; filter: none; /* aucun relief */
     }}
     .topbar-title {{ font-weight: 900; color: var(--ink); font-size: clamp(22px, 3vw, 30px); margin: 0; line-height: 1.05; }}
     .topbar-sub {{ margin-top: .15rem; color: var(--muted); font-size: .98rem; }}
 
-    /* Tabs */
+    /* Tabs larges */
     [data-baseweb="tab-list"] {{
       width: 100%;
       display: grid !important;
@@ -235,13 +215,12 @@ def apply_mobile_css_and_topbar(logo_b64: str | None):
     }}
     [data-baseweb="tab-list"] button {{
       width: 100%;
-      background: var(--card);
+      background: #fff; color: var(--ink);
       border-radius: 12px !important;
-      box-shadow: 0 2px 12px rgba(0,0,0,.06);
-      border: 1px solid var(--border);
+      border: 1px solid rgba(0,0,0,.08);
       padding: .55rem .6rem !important;
       font-weight: 800;
-      color: var(--ink);
+      box-shadow: none; /* pas de relief */
     }}
     [data-baseweb="tab-highlight"] {{ background: linear-gradient(90deg, {COLORS['brand']}, {COLORS['brand2']}); height: 3px; }}
 
@@ -249,26 +228,24 @@ def apply_mobile_css_and_topbar(logo_b64: str | None):
     .stButton>button {{
       background: linear-gradient(90deg, {COLORS['brand']}, {COLORS['brand2']});
       border: 0; color: #fff; font-weight: 900;
-      box-shadow: 0 8px 18px rgba(255,127,63,.28);
+      box-shadow: none; /* pas de relief */
       border-radius: 12px;
     }}
 
-    /* Titres donuts */
     .donut-title {{ font-size: 14px; font-weight: 800; margin-bottom: 0.15rem; color: var(--ink); }}
-
-    /* Capteurs de légende */
     .dot {{ display:inline-block; width:.8em; height:.8em; border-radius:50%; margin-right:.35em; vertical-align: middle; }}
     </style>
     """, unsafe_allow_html=True)
 
     logo_html = f"<img class='topbar-logo' src='data:image/png;base64,{logo_b64}' alt='logo'/>" if logo_b64 else ""
+    # Phrase EXACTE souhaitée + 🍊
     st.markdown(f"""
-    <div class="topbar card">
+    <div class="topbar">
       <div class="topbar-grid">
         <div>{logo_html}</div>
         <div>
           <div class="topbar-title">Totum — Mange mieux, vit mieux</div>
-          <div class="topbar-sub">Un look moderne, clair, fun — et fidèle à ton logo 🍊</div>
+          <div class="topbar-sub">🍊 Ton bien-être commence dans ton assiette !</div>
         </div>
       </div>
     </div>
@@ -285,11 +262,8 @@ def donut(cons, target, title, color_key="energie", height=210):
     if target <= 0:
         fig = go.Figure(data=[go.Pie(values=[1], labels=["Objectif manquant"], hole=0.68,
                                      textinfo="label", marker_colors=[COLORS["objectif"]])])
-        fig.update_layout(
-            title=title, margin=dict(l=0, r=0, t=34, b=0),
-            height=height, showlegend=False, font=dict(size=13),
-            paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)"
-        )
+        fig.update_layout(title=title, margin=dict(l=0, r=0, t=34, b=0), height=height, showlegend=False,
+                          font=dict(size=13), paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
         return fig
     pct = 0.0 if target == 0 else (cons / target * 100.0)
     if pct < 50: wedge = COLORS["bad"]
@@ -321,6 +295,7 @@ PREFERRED_NAMES = {
     "acidealphalinoleniquew3alag":"Acide_alpha-linolénique_W3_ALA_g",
     "acidealpha-linoléniquew3alag":"Acide_alpha-linolénique_W3_ALA_g",
     "acidealpha_linolenique_w3_alag":"Acide_alpha-linolénique_W3_ALA_g",
+    "acidealphalinoleniquew3ala":   "Acide_alpha-linolénique_W3_ALA_g",  # <== sans _g
     "omega3alag": "Acide_alpha-linolénique_W3_ALA_g",
     "omega3ala":  "Acide_alpha-linolénique_W3_ALA_g",
     "w3alag":     "Acide_alpha-linolénique_W3_ALA_g",
@@ -590,7 +565,7 @@ def _logo_b64() -> str | None:
         return base64.b64encode(data).decode()
     return None
 
-# ===================== TOPBAR =====================
+# ===================== HEADER =====================
 apply_mobile_css_and_topbar(_logo_b64())
 
 # ===================== PAGES =====================
@@ -784,27 +759,36 @@ def render_bilan_page():
     targets_micro = st.session_state["targets_micro"].copy()
     profile_targets = st.session_state.get("profile_targets", get_profile_targets_cached())
 
-    # --- ALA robuste (inchangé face à la dernière version stable) ---
-    def _looks_like_ala(colname: str) -> bool:
-        ck = canon_key(colname)
-        if "epa" in ck or "dha" in ck:
-            return False
-        return (("alpha" in ck and "linolen" in ck) or
-                (("omega3" in ck or "w3" in ck) and "ala" in ck) or
-                ck.endswith("alag") or ck == "alag" or "acidealphalinoleniquew3alag" in ck)
+    # ---- ALA : détection ultra-robuste ----
+    def _find_ala_columns_in(dfcols: list[str]) -> list[str]:
+        cols = []
+        for c in dfcols:
+            ck = canon_key(c)
+            if "epa" in ck or "dha" in ck:
+                continue
+            # plusieurs heuristiques
+            if ("ala" in ck and ("omega3" in ck or "w3" in ck)) or \
+               ("alpha" in ck and "linolen" in ck) or \
+               ck.endswith("alag") or ck.endswith("ala") or \
+               "acidealphalinoleniquew3" in ck:
+                cols.append(c)
+        return cols
 
     def _ala_consumed_from_day(df: pd.DataFrame, totals_series: pd.Series) -> float:
+        # 1) exact (la plus propre)
         if df is not None and not df.empty and "Acide_alpha-linolénique_W3_ALA_g" in df.columns:
             return float(pd.to_numeric(df["Acide_alpha-linolénique_W3_ALA_g"], errors="coerce").fillna(0.0).sum())
+        # 2) fuzzy (liste de colonnes candidates)
         if df is not None and not df.empty:
-            ala_cols = [c for c in df.columns if _looks_like_ala(c)]
+            ala_cols = _find_ala_columns_in(df.columns.tolist())
             if ala_cols:
                 s = pd.DataFrame(df[ala_cols]).apply(pd.to_numeric, errors="coerce").fillna(0.0)
                 return float(s.sum(numeric_only=True).sum())
+        # 3) fallback totaux
         if isinstance(totals_series, pd.Series) and not totals_series.empty:
-            candidates = [k for k in totals_series.index if _looks_like_ala(k)]
-            if candidates:
-                return float(pd.to_numeric(totals_series[candidates], errors="coerce").fillna(0.0).sum())
+            cand = _find_ala_columns_in(list(totals_series.index))
+            if cand:
+                return float(pd.to_numeric(totals_series[cand], errors="coerce").fillna(0.0).sum())
             if "Acide_alpha-linolénique_W3_ALA_g" in totals_series.index:
                 return float(pd.to_numeric(pd.Series([totals_series["Acide_alpha-linolénique_W3_ALA_g"]]), errors="coerce").fillna(0.0).iloc[0])
         return 0.0
@@ -1069,7 +1053,7 @@ def render_bilan_page():
     st.markdown("### 🧂 Minéraux")
     micro_bar(mino, "Minéraux — objectif vs ingéré")
 
-# ===================== Onglet 4 — Alimentation (inchangé fonctionnellement) =====================
+# ===================== Onglet 4 — Alimentation =====================
 def render_alimentation_page():
     st.subheader("🍽️ Alimentation")
 
@@ -1131,7 +1115,7 @@ with tab_journal: render_journal_page()
 with tab_bilan:   render_bilan_page()
 with tab_food:    render_alimentation_page()
 
-# ===================== Export/Import (inchangé) =====================
+# ===================== Export/Import =====================
 st.markdown("### 💾 Export / Import")
 def fetch_all_journal() -> pd.DataFrame:
     conn = init_db()
@@ -1187,11 +1171,33 @@ with cI:
 
 # ===================== Diagnostic léger =====================
 with st.expander("🛠️ Diagnostic (ouvrir seulement si besoin)"):
-    st.write("Assets:", str(ASSETS_DIR), "exists:", ASSETS_DIR.exists())
+    st.write("Assets dir:", str(ASSETS_DIR), "exists:", ASSETS_DIR.exists())
     try:
         st.write("Assets list:", os.listdir(ASSETS_DIR) if ASSETS_DIR.exists() else "—")
     except Exception as e:
         st.write("Assets list error:", e)
     st.write("Excel:", str(DEFAULT_EXCEL_PATH), "exists:", DEFAULT_EXCEL_PATH.exists())
     st.write("Logo:", str(DEFAULT_LOGO_PATH), "exists:", DEFAULT_LOGO_PATH.exists())
+    # --- ALA debug ---
+    dflt = dt.date.today().isoformat()
+    last = fetch_last_date_with_rows() or dflt
+    st.write("Dernière date avec lignes:", last)
+    df_dbg = fetch_journal_by_date(last)
+    if df_dbg is not None and not df_dbg.empty:
+        st.write("Colonnes du journal (dernier jour):", list(df_dbg.columns))
+        # colonnes candidates ALA
+        def _find_ala_columns_in(cols):  # même logique que plus haut
+            out = []
+            for c in cols:
+                ck = canon_key(c)
+                if "epa" in ck or "dha" in ck: continue
+                if ("ala" in ck and ("omega3" in ck or "w3" in ck)) or ("alpha" in ck and "linolen" in ck) or \
+                   ck.endswith("alag") or ck.endswith("ala") or "acidealphalinoleniquew3" in ck:
+                    out.append(c)
+            return out
+        ala_cols = _find_ala_columns_in(df_dbg.columns.tolist())
+        st.write("ALA colonnes détectées:", ala_cols if ala_cols else "—")
+        if ala_cols:
+            s = pd.DataFrame(df_dbg[ala_cols]).apply(pd.to_numeric, errors="coerce").fillna(0.0)
+            st.write("Somme ALA (débug):", float(s.sum(numeric_only=True).sum()))
     st.write("Build:", VERSION)
