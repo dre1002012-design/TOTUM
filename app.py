@@ -1,7 +1,10 @@
-# Totum — Suivi nutritionnel
-# Header plat + favicon logo + ALA objectif garanti + Alimentation en cartes
+# Totum — Suivi nutritionnel (V7)
+# Modifications : header logo centré, fond blanc forcé, onglet "Conseils" dynamique,
+# recherche Journal optimisée (priorité startswith + token match + fallback contains),
+# conservation de la logique existante (calculs, sqlite, import/export, ALA, ...)
+
 from __future__ import annotations
-import os, io, re, json, sqlite3, unicodedata, datetime as dt, base64
+import os, io, re, json, sqlite3, unicodedata, datetime as dt, base64, random, math
 from pathlib import Path
 import numpy as np
 import pandas as pd
@@ -9,12 +12,12 @@ import streamlit as st
 import plotly.graph_objects as go
 import openpyxl
 
-VERSION = "v2025-10-06-ui-flat-favicon-ala-fixed-cards-01"
+VERSION = "v2025-10-07-v7-logo-centered-white-consels-journal-search-optimized"
 
 # --- Page config (layout wide, sidebar fermée) ---
 st.set_page_config(
     page_title="Totum — suivi nutritionnel",
-    page_icon="🥗",  # sera remplacé dynamiquement par ton logo plus bas
+    page_icon="🥗",
     layout="wide",
     initial_sidebar_state="collapsed",
 )
@@ -144,22 +147,18 @@ COLORS = {
     "ok":        "#5cb85c",  "warn":      "#f0ad4e", "bad":"#d9534f",
 }
 
-# ============ Mobile-first CSS + Header plat ============
+# ============ Mobile-first CSS + Header plat (FORCE WHITE) ============
 def apply_mobile_css_and_topbar(logo_b64: str | None):
     st.markdown(f"""
     <style>
     [data-testid="stToolbar"], [data-testid="stDecoration"], [data-testid="stStatusWidget"], header, footer {{display:none!important;}}
-    :root {{ --bg:#fff; --ink:{COLORS['ink']}; --muted:{COLORS['muted']}; }}
-    @media (prefers-color-scheme: dark) {{ :root {{ --bg:#0f1216; --ink:#f6f7f8; --muted:#b9c0c7; }} }}
+    :root {{ --bg:#ffffff; --ink:{COLORS['ink']}; --muted:{COLORS['muted']}; }}
     html, body, .stApp, [data-testid="stAppViewContainer"] {{ background:var(--bg)!important; color:var(--ink); font-size:15.5px; min-height:100vh; }}
     .block-container {{ padding-top:.8rem; padding-bottom:.8rem; max-width:1100px; }}
 
-    /* Header très plat, sans encadré ni ombre */
-    .topbar {{ position:sticky; top:0; z-index:100; padding:.25rem 0 .6rem 0; margin:0 0 .2rem 0; }}
-    .topbar-grid {{ display:grid; grid-template-columns:auto 1fr; align-items:center; gap:.8rem; }}
-    .topbar-logo {{ width:120px; height:120px; min-width:120px; object-fit:contain; }}
-    .topbar-title {{ font-weight:900; color:var(--ink); font-size:clamp(22px,3vw,30px); margin:0; line-height:1.05; }}
-    .topbar-sub {{ margin-top:.15rem; color:var(--muted); font-size:.98rem; }}
+    /* Header très plat, logo centré seul */
+    .topbar {{ position:sticky; top:0; z-index:100; padding:.6rem 0 .6rem 0; margin:0 0 .2rem 0; display:flex; justify-content:center; align-items:center; }}
+    .topbar-logo {{ width:140px; height:140px; object-fit:contain; }}
 
     [data-baseweb="tab-list"] {{ width:100%; display:grid!important; grid-template-columns:1fr 1fr 1fr 1fr; gap:.35rem; margin:.6rem 0 .2rem 0; }}
     [data-baseweb="tab-list"] button {{ width:100%; background:#fff; color:var(--ink); border-radius:12px!important; border:1px solid rgba(0,0,0,.08); padding:.55rem .6rem!important; font-weight:800; box-shadow:none; }}
@@ -169,9 +168,9 @@ def apply_mobile_css_and_topbar(logo_b64: str | None):
     .donut-title {{ font-size:14px; font-weight:800; margin-bottom:.15rem; color:var(--ink); }}
     .dot {{ display:inline-block; width:.8em; height:.8em; border-radius:50%; margin-right:.35em; vertical-align:middle; }}
 
-    /* Cartes (onglet Alimentation) */
+    /* Cartes (onglet Conseils) */
     .cards {{ display:grid; grid-template-columns:repeat(auto-fill,minmax(260px,1fr)); gap:.75rem; }}
-    .card {{ border:1px solid rgba(0,0,0,.08); border-radius:14px; padding:.85rem .9rem; background:#fff; }}
+    .card {{ border:1px solid rgba(0,0,0,.06); border-radius:14px; padding:.85rem .9rem; background:#fff; }}
     .card h4 {{ margin:.1rem 0 .25rem 0; font-size:1.03rem; }}
     .card .role {{ color:var(--muted); font-size:.93rem; margin-bottom:.25rem; }}
     .card .benef {{ font-size:.95rem; }}
@@ -181,13 +180,7 @@ def apply_mobile_css_and_topbar(logo_b64: str | None):
     logo_html = f"<img class='topbar-logo' src='data:image/png;base64,{logo_b64}' alt='logo'/>" if logo_b64 else ""
     st.markdown(f"""
     <div class="topbar">
-      <div class="topbar-grid">
-        <div>{logo_html}</div>
-        <div>
-          <div class="topbar-title">Mange mieux, vit mieux</div>
-          <div class="topbar-sub">🍊 Ton bien-être commence dans ton assiette !</div>
-        </div>
-      </div>
+      <div>{logo_html}</div>
     </div>
     """, unsafe_allow_html=True)
 
@@ -462,7 +455,55 @@ def _logo_b64() -> str | None:
 apply_mobile_css_and_topbar(_logo_b64())
 set_favicon_from_logo(_logo_b64())
 
-# ===================== PAGES =====================
+# ===================== PAGES modifications =====================
+
+# ---------- helper: improved search/fuzzy (lightweight, no extra dependency) ----------
+def journal_search_candidates(foods_df: pd.DataFrame, q: str, limit: int = 12) -> list[str]:
+    """
+    Recherche optimisée :
+    - priorité startswith (meilleure correspondance)
+    - ensuite token match (tous tokens présents)
+    - ensuite contains
+    - fallback : approximate by character overlap score
+    """
+    if foods_df is None or foods_df.empty:
+        return []
+    q = (q or "").strip()
+    base = foods_df["nom"].astype(str).tolist()
+    if not q:
+        return base[:limit]
+    q_canon = canon(q)
+    q_tokens = [t for t in q_canon.split(" ") if t]
+    starts = []
+    token_match = []
+    contains = []
+    for name in base:
+        c = canon(name)
+        if c.startswith(q_canon):
+            starts.append(name); continue
+        # token match: all tokens present
+        if all(tok in c for tok in q_tokens):
+            token_match.append(name); continue
+        if q_canon in c:
+            contains.append(name); continue
+    # fallback approximate: score by number of matching chars (simple heuristic)
+    rest = [n for n in base if n not in starts and n not in token_match and n not in contains]
+    def char_score(a, b):
+        sa = set(canon(a))
+        sb = set(canon(b))
+        inter = len(sa & sb)
+        union = max(len(sa | sb), 1)
+        return inter / union
+    rest_sorted = sorted(rest, key=lambda x: -char_score(x, q_canon))
+    out = starts + token_match + contains + rest_sorted
+    # dedupe preserving order
+    seen = set(); uniq = []
+    for x in out:
+        if x not in seen:
+            uniq.append(x); seen.add(x)
+    return uniq[:limit]
+
+# ---------- render profile (unchanged majorly) ----------
 def render_profile_page():
     st.subheader("👤 Profil")
     p = st.session_state["profile"]
@@ -490,21 +531,17 @@ def render_profile_page():
     li.metric("Lipides (g)",   f"{profile_targets['lipides_g']:.1f}")
     fi.metric("Fibres (g)",    f"{profile_targets['fibres_g']:.1f}")
 
+# ---------- render journal (improved search + UX) ----------
 def render_journal_page():
     st.subheader("🧾 Journal")
     foods = st.session_state["foods"]
 
-    # Recherche + suggestions
+    # Recherche intelligente
     q = st.text_input("🔎 Rechercher un aliment", placeholder="Tape 2-3 lettres… (ex: poulet, riz, pomme)")
-    suggestions = []
-    if not foods.empty:
-        base = foods["nom"].astype(str).tolist()
-        suggestions = base
-        if q:
-            qn = canon(q); suggestions = [x for x in base if qn in canon(x)]
-        suggestions = suggestions[:8]
+    # Generate prioritized suggestions using journal_search_candidates
+    suggestions = journal_search_candidates(foods, q, limit=10)
     if suggestions:
-        st.caption("Suggestions : clique pour pré-remplir l’ajout 👇")
+        st.caption("Suggestions rapides : clique pour ajouter en un clic 👇")
         for idx, name in enumerate(suggestions):
             with st.container():
                 cA, cB, cC = st.columns([6,2,2])
@@ -519,6 +556,7 @@ def render_journal_page():
                         insert_journal(dt.date.today().isoformat(), "Déjeuner", name, qty_val, calc)
                         st.session_state["last_added_date"] = dt.date.today().isoformat()
                         st.success(f"Ajouté : {qty_val} g de {name} (Déjeuner)")
+
     st.divider()
 
     # Ajout standard
@@ -527,8 +565,9 @@ def render_journal_page():
     repas = c2.selectbox("Repas", ["Petit-déjeuner","Déjeuner","Dîner","Collation"])
     qty = c3.number_input("Quantité (g)", min_value=1, value=150, step=10)
     options = foods["nom"].astype(str).tolist() if not foods.empty else ["(liste vide)"]
+    # apply local filtering with same search heuristic to keep options small & fast
     if q:
-        qn = canon(q); options = [x for x in options if qn in canon(x)] or options
+        options = journal_search_candidates(foods, q, limit=200) or options
     nom = c4.selectbox("Aliment (liste)", options=options)
     if st.button("➕ Ajouter (depuis la liste)"):
         if not foods.empty and nom != "(liste vide)":
@@ -608,6 +647,7 @@ def render_journal_page():
         if st.button("🗑️ Supprimer cette ligne"):
             delete_journal_row(sel_id); st.success(f"Ligne #{sel_id} supprimée."); st.rerun()
 
+# ---------- bilan (inchangé sauf petites optimisations) ----------
 def unify_totals_for_date(date_iso: str) -> pd.Series:
     df_today = fetch_journal_by_date(date_iso)
     if not df_today.empty:
@@ -620,7 +660,6 @@ def unify_totals_for_date(date_iso: str) -> pd.Series:
         return unify_totals_series(raw)
     return pd.Series(dtype=float)
 
-# ===== Helpers Bilan =====
 def render_bilan_page():
     st.subheader("📊 Bilan")
     default_bilan_date = dt.date.today()
@@ -640,7 +679,7 @@ def render_bilan_page():
     targets_micro = st.session_state["targets_micro"].copy()
     profile_targets = st.session_state.get("profile_targets", get_profile_targets_cached())
 
-    # ---- ALA : calcul conso robuste ----
+    # === ALA : calcul conso robuste ===
     def _find_ala_columns_in(dfcols: list[str]) -> list[str]:
         cols = []
         for c in dfcols:
@@ -750,7 +789,7 @@ def render_bilan_page():
         df["Consommée"] = pd.to_numeric(df["Consommée"], errors="coerce").fillna(0.0)
         df["Objectif"]   = df["Objectif"].apply(round1); df["Consommée"] = df["Consommée"].apply(round1)
         df["% objectif"] = percent(df["Consommée"], df["Objectif"]).apply(round1)
-        for c in ["Icône"]: 
+        for c in ["Icône"]:
             if c not in df.columns: df[c] = ""
             df[c] = df[c].fillna("")
         return df
@@ -890,33 +929,96 @@ def render_bilan_page():
     st.markdown("### 🧂 Minéraux")
     micro_bar(mino, "Minéraux — objectif vs ingéré")
 
-# ===================== Onglet 4 — Alimentation (cartes visuelles) =====================
-def render_alimentation_page():
-    st.subheader("🍽️ Alimentation")
+# ===================== Onglet 4 — Conseils (remplace Alimentation) =====================
+def generate_contextual_tips(profile: dict, totals: pd.Series) -> tuple[list[str], list[str]]:
+    """
+    Retourne (conseils_pratiques, phrases_motivation)
+    Ces listes varient à CHAQUE affichage (basé sur un mélange aléatoire déterminé par l'heure)
+    et sont contextualisées par le profil + consommations du jour.
+    """
+    # seed with minute to change à chaque affichage / refresh
+    seed = int(dt.datetime.now().timestamp() // 5)  # change toutes les 5s environ pour tests; tu peux ajuster
+    random.seed(seed + int(profile.get("poids_kg", 70)) + int(profile.get("age",40)))
+    # base tips pool (holistique / naturopathique + pragmatique)
+    general_tips = [
+        "Commence ton repas par un grand verre d’eau — l’hydratation améliore la satiété et la digestion.",
+        "Ajoute une portion de légumes verts à chaque repas pour booster fibres et micronutriments.",
+        "Privilégie les protéines au petit-déjeuner pour mieux gérer l’appétit toute la matinée.",
+        "Remplace une portion de céréales raffinées par des légumineuses pour plus de fibres et protéines.",
+        "Pour réduire les sucres, choisis un fruit entier plutôt qu’un jus ou un dessert sucré.",
+        "Intègre des cuillères d’huile d’olive crue en finition pour augmenter OMÉGA-9 et saveur.",
+        "Si tu manques d’énergie l’après-midi, une petite marche de 10–15 min aide beaucoup.",
+        "Favorise les aliments fermentés (yaourt nature, kéfir, choucroute) pour ta flore intestinale.",
+        "Pour un sommeil réparateur, évite la caféine après 15h et choisis un dîner léger en sucres simples.",
+        "Un snack combinant protéine + fibres (yaourt + graines, pomme + purée d’amande) retarde la faim.",
+    ]
+    # naturopathic / lifestyle tips
+    naturop_tips = [
+        "Pense à la rondeur digestive : mastique plus lentement pour améliorer assimilation et satiété.",
+        "Un bain chaud, respiration lente ou courte méditation avant le dîner favorisent une digestion calme.",
+        "Alterne sources de protéines végétales et animales sur la semaine pour diversité micro-nutritionnelle.",
+        "Inclue une source d’iode (algue en petite quantité, poisson) si tu consommes peu d’iode habituellement.",
+    ]
+    # targeted tips selon totaux (ex : sucres, fibres, AG saturés)
+    targeted = []
+    try:
+        pct_sucres = float(totals.get("Sucres_g", 0.0)) / max(float(profile.get("profile_targets", {}).get("sucres_g", profile.get("poids_kg",1))), 1.0)
+    except Exception:
+        pct_sucres = 0.0
+    if float(totals.get("Sucres_g", 0.0)) > (profile.get("profile_targets", {}).get("sucres_g", 40) * 0.9):
+        targeted.append("Ton apport en sucres est élevé aujourd'hui — observe boissons et snacks sucrés.")
+    if float(totals.get("AG_saturés_g", totals.get("AG_satures_g", 0.0))) > profile.get("profile_targets", {}).get("agsatures_g", 0) * 0.9:
+        targeted.append("AG saturés proches de la limite — préfère poisson, volaille, huile d'olive plutôt que charcuterie.")
+    if float(totals.get("Fibres_g", 0.0)) < profile.get("profile_targets", {}).get("fibres_g", 25):
+        targeted.append("Penses-y : une portion additionnelle de légumes/légumineuses équivaut à +5–8 g de fibres.")
+    # Build final lists - sample varied items
+    pool_tips = general_tips + naturop_tips + targeted
+    random.shuffle(pool_tips)
+    chosen_tips = pool_tips[:4] if len(pool_tips) >= 4 else pool_tips
 
-    # Conseil du jour en haut
+    motiv_pool = [
+        "Super boulot — chaque petit choix compte, continue comme ça 💪",
+        "Une habitude à la fois : rappelle-toi pourquoi tu as commencé ✨",
+        "Tu es sur la bonne voie — la constance bat la perfection chaque jour.",
+        "Chaque repas est une nouvelle opportunité pour te sentir mieux aujourd'hui.",
+        "Petit conseil : célèbre tes petites victoires (un repas équilibré = une victoire).",
+        "Rappelle-toi : le progrès est progressif — sois gentil·le avec toi-même.",
+    ]
+    random.shuffle(motiv_pool)
+    chosen_motiv = motiv_pool[:3]
+
+    return chosen_tips, chosen_motiv
+
+def render_conseils_page():
+    st.subheader("💡 Conseils")
+    # contexte
     last_date = fetch_last_date_with_rows() or dt.date.today().isoformat()
     totals = unify_totals_for_date(last_date)
-    prof = st.session_state.get("profile_targets", get_profile_targets_cached())
-    def pct(cons, key):
-        c = float(cons or 0.0); t = float(prof.get(key, 0.0) or 0.0)
-        return 0.0 if t == 0 else c/t*100.0
-    sug = float(totals.get("Sucres_g", 0.0))
-    ags = float(totals.get("AG_saturés_g", totals.get("AG_satures_g", 0.0)))
-    fib = float(totals.get("Fibres_g", 0.0))
-    tips = []
-    if pct(sug,"sucres_g") >= 110: tips.append("Réduis les boissons sucrées : vise eau/thé/café non sucré au prochain repas.")
-    elif pct(sug,"sucres_g") >= 80: tips.append("Proche de la limite de sucres : opte pour un dessert fruité entier.")
-    if pct(ags,"agsatures_g") >= 110: tips.append("Trop d’AG saturés : remplace le beurre par l’huile d’olive.")
-    elif pct(ags,"agsatures_g") >= 80: tips.append("Attention AG saturés : préfère poisson/volaille à la charcuterie.")
-    if pct(fib,"fibres_g") < 60: tips.append("Boost fibres : ajoute légumes verts ou légumineuses au repas suivant.")
-    if not tips: tips = ["Belle journée d’équilibre 🎯 Continue sur cette lancée !"]
-    idx = dt.date.today().day % len(tips)
-    st.success("💡 " + tips[idx])
+    profile_targets = st.session_state.get("profile_targets", get_profile_targets_cached())
+    # generate dynamic, context-aware tips + motivations
+    tips, motivs = generate_contextual_tips(st.session_state["profile"], totals)
+    # show a prominent dynamic advice card (varies at each page render)
+    st.markdown("### Conseil rapide")
+    with st.container():
+        # big highlighted box
+        if tips:
+            st.success("💡 " + tips[0])
+        else:
+            st.success("💡 Continue comme ça — petit à petit, tu atteindras tes objectifs !")
+    st.divider()
+    # motivations (varient)
+    st.markdown("### Motivation du jour")
+    for m in motivs:
+        st.info("✨ " + m)
 
     st.divider()
+    # conseils pratiques (liste)
+    st.markdown("### Conseils pratiques & naturopathiques")
+    for t in tips:
+        st.write("• " + t)
 
-    # Récup tables Excel
+    st.divider()
+    # conserve les cartes macro / micro si disponibles (valeur ajoutée)
     targets_macro = st.session_state.get("targets_macro", pd.DataFrame()).copy()
     targets_micro = st.session_state.get("targets_micro", pd.DataFrame()).copy()
 
@@ -952,11 +1054,11 @@ def render_alimentation_page():
         if not mino.empty: show_cards(mino, "🧂 Minéraux — rôles & bénéfices",   "🧂")
 
 # ===================== Tabs =====================
-tab_profile, tab_journal, tab_bilan, tab_food = st.tabs(["👤 Profil", "🧾 Journal", "📊 Bilan", "🍽️ Alimentation"])
+tab_profile, tab_journal, tab_bilan, tab_food = st.tabs(["👤 Profil", "🧾 Journal", "📊 Bilan", "💡 Conseils"])
 with tab_profile: render_profile_page()
 with tab_journal: render_journal_page()
 with tab_bilan:   render_bilan_page()
-with tab_food:    render_alimentation_page()
+with tab_food:    render_conseils_page()
 
 # ===================== Export/Import (conservé) =====================
 st.markdown("### 💾 Export / Import")
