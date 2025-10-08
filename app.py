@@ -171,76 +171,46 @@ COLORS = {
 
 # ============ Mobile-first CSS + Header plat (FORCE WHITE) ============
 def apply_mobile_css_and_topbar(logo_b64: str | None):
-    # Minimal, non-invasive fix for mobile "grisé" issue:
-    # - fix malformed rgba decimals (e.g. rgba(...,08) -> 0.08)
-    # - force light color-scheme so browsers/extensions won't forcibly invert/gray colors
-    # - protect images/svg/canvas and text fill from forced dark filters
     st.markdown(f"""
     <style>
     [data-testid="stToolbar"], [data-testid="stDecoration"], [data-testid="stStatusWidget"], header, footer {{display:none!important;}}
-    /* force light color scheme for browsers that respect it */
-    :root {{ 
-      --bg:#ffffff; 
-      --ink:{COLORS['ink']}; 
-      --muted:{COLORS['muted']}; 
-      color-scheme: light;
-    }}
-    html, body, .stApp, [data-testid="stAppViewContainer"] {{
-      background:var(--bg)!important;
-      color:var(--ink) !important;
-      -webkit-text-fill-color: var(--ink) !important; /* protection WebKit/Chromium */
-      color-scheme: light; /* explicit */
-      font-size:15.5px;
-      min-height:100vh;
-    }}
+    :root {{ --bg:#ffffff; --ink:{COLORS['ink']}; --muted:{COLORS['muted']}; }}
+    html, body, .stApp, [data-testid="stAppViewContainer"] {{ background:var(--bg)!important; color:var(--ink); font-size:15.5px; min-height:100vh; }}
     .block-container {{ padding-top:.8rem; padding-bottom:.8rem; max-width:1100px; }}
 
-    /* Header very flat */
+
+    /* Header très plat, logo centré seul */
     .topbar {{ position:sticky; top:0; z-index:100; padding:.6rem 0 .6rem 0; margin:0 0 .2rem 0; display:flex; justify-content:center; align-items:center; }}
     .topbar-logo {{ width:140px; height:140px; object-fit:contain; }}
 
+
     [data-baseweb="tab-list"] {{ width:100%; display:grid!important; grid-template-columns:1fr 1fr 1fr 1fr; gap:.35rem; margin:.6rem 0 .2rem 0; }}
-    [data-baseweb="tab-list"] button {{ width:100%; background:#fff; color:var(--ink); border-radius:12px!important; border:1px solid rgba(0,0,0,0.08); padding:.55rem .6rem!important; font-weight:800; box-shadow:none; }}
+    [data-baseweb="tab-list"] button {{ width:100%; background:#fff; color:var(--ink); border-radius:12px!important; border:1px solid rgba(0,0,0,.08); padding:.55rem .6rem!important; font-weight:800; box-shadow:none; }}
     [data-baseweb="tab-highlight"] {{ background: linear-gradient(90deg, {COLORS['brand']}, {COLORS['brand2']}); height:3px; }}
+
 
     .stButton>button {{ background: linear-gradient(90deg, {COLORS['brand']}, {COLORS['brand2']}); border:0; color:#fff; font-weight:900; box-shadow:none; border-radius:12px; }}
     .donut-title {{ font-size:14px; font-weight:800; margin-bottom:.15rem; color:var(--ink); }}
     .dot {{ display:inline-block; width:.8em; height:.8em; border-radius:50%; margin-right:.35em; vertical-align:middle; }}
 
+
+    /* Cartes (onglet Conseils) */
     .cards {{ display:grid; grid-template-columns:repeat(auto-fill,minmax(260px,1fr)); gap:.75rem; }}
-    .card {{ border:1px solid rgba(0,0,0,0.06); border-radius:14px; padding:.85rem .9rem; background:#fff; }}
+    .card {{ border:1px solid rgba(0,0,0,.06); border-radius:14px; padding:.85rem .9rem; background:#fff; }}
     .card h4 {{ margin:.1rem 0 .25rem 0; font-size:1.03rem; }}
     .card .role {{ color:var(--muted); font-size:.93rem; margin-bottom:.25rem; }}
     .card .benef {{ font-size:.95rem; }}
-
-    /* Protect images / svgs / canvas from browser forced dark filters */
-    img, svg, canvas {{ filter: none !important; -webkit-filter: none !important; }}
-
-    /* keep text fill color strict */
-    * {{ -webkit-text-fill-color: unset; }}
     </style>
     """, unsafe_allow_html=True)
 
-    # Inject JS to reinforce theme color / color-scheme (helps some Android browsers)
-    st.markdown(f"""
-    <script>
-      (function(){{
-        try {{
-          document.documentElement.style.colorScheme = 'light';
-          document.documentElement.style.setProperty('--bg', '#ffffff');
-          var m = document.querySelector('meta[name="theme-color"]');
-          if(!m) {{ m = document.createElement('meta'); m.name = 'theme-color'; document.head.appendChild(m); }}
-          m.content = '#ffffff';
-        }} catch(e){{ console && console.warn && console.warn('color-scheme set failed', e); }}
-      }})();
-    </script>
-    """, unsafe_allow_html=True)
+
     logo_html = f"<img class='topbar-logo' src='data:image/png;base64,{logo_b64}' alt='logo'/>" if logo_b64 else ""
     st.markdown(f"""
     <div class="topbar">
       <div>{logo_html}</div>
     </div>
     """, unsafe_allow_html=True)
+
 
 def set_favicon_from_logo(logo_b64: str | None):
     if not logo_b64: return
