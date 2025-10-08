@@ -4,6 +4,8 @@
 # conservation de la logique existante (calculs, sqlite, import/export, ALA, ...)
 
 
+
+
 from __future__ import annotations
 import os, io, re, json, sqlite3, unicodedata, datetime as dt, base64, random, math
 from pathlib import Path
@@ -14,7 +16,11 @@ import plotly.graph_objects as go
 import openpyxl
 
 
+
+
 VERSION = "v2025-10-07-v7-logo-centered-white-consels-journal-search-optimized"
+
+
 
 
 # --- Page config (layout wide, sidebar fermée) ---
@@ -26,7 +32,11 @@ st.set_page_config(
 )
 
 
+
+
 DB_PATH = os.path.join(os.getcwd(), "totum.db")
+
+
 
 
 # === Assets packagés
@@ -35,10 +45,14 @@ DEFAULT_EXCEL_PATH = ASSETS_DIR / "TOTUM-Suivi nutritionnel.xlsx"
 DEFAULT_LOGO_PATH  = ASSETS_DIR / "logo.png"
 
 
+
+
 # ===================== Utils =====================
 def strip_accents(text: str) -> str:
     text = str(text or "")
     return "".join(ch for ch in unicodedata.normalize("NFD", text) if unicodedata.category(ch) != "Mn")
+
+
 
 
 def canon(s: str) -> str:
@@ -46,8 +60,12 @@ def canon(s: str) -> str:
     return re.sub(r"\s+", " ", s).strip()
 
 
+
+
 def canon_key(s: str) -> str:
     return canon(s).replace("(", "").replace(")", "").replace("’", "'").replace(" ", "").replace("__", "_")
+
+
 
 
 def norm(s: str) -> str:
@@ -55,10 +73,14 @@ def norm(s: str) -> str:
     return re.sub(r"[^a-z0-9]+", "", s)
 
 
+
+
 def normalize_unit(u: str) -> str:
     u = (u or "").strip()
     u = u.replace("mcg", "µg").replace("ug", "µg").replace("μg", "µg")
     return u
+
+
 
 
 def parse_name_unit(label: str) -> tuple[str,str]:
@@ -72,11 +94,15 @@ def parse_name_unit(label: str) -> tuple[str,str]:
     return s, ""
 
 
+
+
 def coerce_num_col(s: pd.Series | None) -> pd.Series | None:
     if s is None: return None
     s = s.astype(str).str.replace("\u00A0", " ", regex=False).str.replace(",", ".", regex=False)
     ext = s.str.extract(r"([-+]?\d*\.?\d+)")[0]
     return pd.to_numeric(ext, errors="coerce")
+
+
 
 
 def percent(n, d):
@@ -85,12 +111,18 @@ def percent(n, d):
     return (n / d * 100).fillna(0.0)
 
 
+
+
 def nutrient_cols(df_or_row):
     cols = list(df_or_row.index if isinstance(df_or_row, pd.Series) else df_or_row.columns)
     return [c for c in cols if str(c).endswith("_100g")]
 
 
+
+
 def per100_to_name(c): return c[:-5]
+
+
 
 
 def drop_parasite_columns(df: pd.DataFrame | None) -> pd.DataFrame | None:
@@ -103,6 +135,8 @@ def drop_parasite_columns(df: pd.DataFrame | None) -> pd.DataFrame | None:
         cols.append(c)
     out = df[cols]
     return out.loc[:, ~(out.isna().all())]
+
+
 
 
 def read_sheet_values_path(path: Path, sheet_name: str) -> pd.DataFrame | None:
@@ -120,6 +154,8 @@ def read_sheet_values_path(path: Path, sheet_name: str) -> pd.DataFrame | None:
         return None
 
 
+
+
 def clean_liste(df_liste: pd.DataFrame) -> pd.DataFrame:
     df_liste = drop_parasite_columns(df_liste)
     assert "nom" in df_liste.columns, "La feuille 'Liste' doit contenir la colonne 'nom'."
@@ -129,6 +165,8 @@ def clean_liste(df_liste: pd.DataFrame) -> pd.DataFrame:
     df = df_liste[keep].copy()
     for c in [x for x in df.columns if x.endswith("_100g")]:
         df[c] = coerce_num_col(df[c]).fillna(0.0)
+
+
 
 
     # fusion de colonnes quasi identiques
@@ -146,6 +184,8 @@ def clean_liste(df_liste: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+
+
 def calc_from_food_row(row: pd.Series, qty_g: float) -> dict:
     out = {}
     for c in nutrient_cols(row):
@@ -153,6 +193,8 @@ def calc_from_food_row(row: pd.Series, qty_g: float) -> dict:
         if pd.notna(val):
             out[per100_to_name(c)] = float(qty_g) * float(val) / 100.0
     return out
+
+
 
 
 # ============ Couleurs ============
@@ -169,23 +211,42 @@ COLORS = {
 }
 
 
+
+
 # ============ Mobile-first CSS + Header plat (FORCE WHITE) ============
 def apply_mobile_css_and_topbar(logo_b64: str | None):
+    # Minimal, non-invasive fix for mobile "grisé" issue:
+    # - fix malformed rgba decimals (e.g. rgba(...,08) -> 0.08)
+    # - force light color-scheme so browsers/extensions won't forcibly invert/gray colors
+    # - protect images/svg/canvas and text fill from forced dark filters
     st.markdown(f"""
     <style>
     [data-testid="stToolbar"], [data-testid="stDecoration"], [data-testid="stStatusWidget"], header, footer {{display:none!important;}}
-    :root {{ --bg:#ffffff; --ink:{COLORS['ink']}; --muted:{COLORS['muted']}; }}
-    html, body, .stApp, [data-testid="stAppViewContainer"] {{ background:var(--bg)!important; color:var(--ink); font-size:15.5px; min-height:100vh; }}
+    /* force light color scheme for browsers that respect it */
+    :root {{
+      --bg:#ffffff;
+      --ink:{COLORS['ink']};
+      --muted:{COLORS['muted']};
+      color-scheme: light;
+    }}
+    html, body, .stApp, [data-testid="stAppViewContainer"] {{
+      background:var(--bg)!important;
+      color:var(--ink) !important;
+      -webkit-text-fill-color: var(--ink) !important; /* protection WebKit/Chromium */
+      color-scheme: light; /* explicit */
+      font-size:15.5px;
+      min-height:100vh;
+    }}
     .block-container {{ padding-top:.8rem; padding-bottom:.8rem; max-width:1100px; }}
 
 
-    /* Header très plat, logo centré seul */
+    /* Header very flat */
     .topbar {{ position:sticky; top:0; z-index:100; padding:.6rem 0 .6rem 0; margin:0 0 .2rem 0; display:flex; justify-content:center; align-items:center; }}
     .topbar-logo {{ width:140px; height:140px; object-fit:contain; }}
 
 
     [data-baseweb="tab-list"] {{ width:100%; display:grid!important; grid-template-columns:1fr 1fr 1fr 1fr; gap:.35rem; margin:.6rem 0 .2rem 0; }}
-    [data-baseweb="tab-list"] button {{ width:100%; background:#fff; color:var(--ink); border-radius:12px!important; border:1px solid rgba(0,0,0,.08); padding:.55rem .6rem!important; font-weight:800; box-shadow:none; }}
+    [data-baseweb="tab-list"] button {{ width:100%; background:#fff; color:var(--ink); border-radius:12px!important; border:1px solid rgba(0,0,0,0.08); padding:.55rem .6rem!important; font-weight:800; box-shadow:none; }}
     [data-baseweb="tab-highlight"] {{ background: linear-gradient(90deg, {COLORS['brand']}, {COLORS['brand2']}); height:3px; }}
 
 
@@ -194,16 +255,37 @@ def apply_mobile_css_and_topbar(logo_b64: str | None):
     .dot {{ display:inline-block; width:.8em; height:.8em; border-radius:50%; margin-right:.35em; vertical-align:middle; }}
 
 
-    /* Cartes (onglet Conseils) */
     .cards {{ display:grid; grid-template-columns:repeat(auto-fill,minmax(260px,1fr)); gap:.75rem; }}
-    .card {{ border:1px solid rgba(0,0,0,.06); border-radius:14px; padding:.85rem .9rem; background:#fff; }}
+    .card {{ border:1px solid rgba(0,0,0,0.06); border-radius:14px; padding:.85rem .9rem; background:#fff; }}
     .card h4 {{ margin:.1rem 0 .25rem 0; font-size:1.03rem; }}
     .card .role {{ color:var(--muted); font-size:.93rem; margin-bottom:.25rem; }}
     .card .benef {{ font-size:.95rem; }}
+
+
+    /* Protect images / svgs / canvas from browser forced dark filters */
+    img, svg, canvas {{ filter: none !important; -webkit-filter: none !important; }}
+
+
+    /* keep text fill color strict */
+    * {{ -webkit-text-fill-color: unset; }}
     </style>
     """, unsafe_allow_html=True)
 
 
+    # Inject JS to reinforce theme color / color-scheme (helps some Android browsers)
+    st.markdown(f"""
+    <script>
+      (function(){{
+        try {{
+          document.documentElement.style.colorScheme = 'light';
+          document.documentElement.style.setProperty('--bg', '#ffffff');
+          var m = document.querySelector('meta[name="theme-color"]');
+          if(!m) {{ m = document.createElement('meta'); m.name = 'theme-color'; document.head.appendChild(m); }}
+          m.content = '#ffffff';
+        }} catch(e){{ console && console.warn && console.warn('color-scheme set failed', e); }}
+      }})();
+    </script>
+    """, unsafe_allow_html=True)
     logo_html = f"<img class='topbar-logo' src='data:image/png;base64,{logo_b64}' alt='logo'/>" if logo_b64 else ""
     st.markdown(f"""
     <div class="topbar">
@@ -226,9 +308,13 @@ def set_favicon_from_logo(logo_b64: str | None):
     """, unsafe_allow_html=True)
 
 
+
+
 def round1(x) -> float:
     try: return float(np.round(float(x), 1))
     except Exception: return 0.0
+
+
 
 
 def donut(cons, target, title, color_key="energie", height=210):
@@ -251,6 +337,8 @@ def donut(cons, target, title, color_key="energie", height=210):
         paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)"
     )
     return fig
+
+
 
 
 # ============ Unification totaux ============
@@ -277,12 +365,16 @@ def unify_totals_series(s: pd.Series) -> pd.Series:
     return out
 
 
+
+
 # ============ Profil / objectifs ============
 def bmr_harris_benedict_revised(sex, age, height_cm, weight_kg):
     if norm(sex).startswith("h"):
         return 88.362 + 13.397*float(weight_kg) + 4.799*float(height_cm) - 5.677*int(age)
     else:
         return 447.593 + 9.247*float(weight_kg) + 3.098*float(height_cm) - 4.330*int(age)
+
+
 
 
 ACTIVITY_TABLE = {
@@ -299,6 +391,8 @@ RULES = {
 }
 
 
+
+
 def activity_key(a: str) -> str:
     a = norm(a)
     if "sedentaire" in a: return "sedentaire"
@@ -307,6 +401,8 @@ def activity_key(a: str) -> str:
     if "intense" in a and "tres" not in a and "2x" not in a: return "intense"
     if "tresintense" in a or "2x" in a or "athlete" in a: return "tresintense"
     return "sedentaire"
+
+
 
 
 def excel_like_targets(p: dict) -> dict:
@@ -331,6 +427,8 @@ def excel_like_targets(p: dict) -> dict:
     }
 
 
+
+
 def get_profile_targets_cached() -> dict:
     p = st.session_state["profile"]
     base = excel_like_targets(p)
@@ -339,11 +437,15 @@ def get_profile_targets_cached() -> dict:
     return prof
 
 
+
+
 # ============ SQLite ============
 def db():
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     conn.execute("PRAGMA journal_mode=WAL;")
     return conn
+
+
 
 
 def init_db():
@@ -369,6 +471,8 @@ def init_db():
     return conn
 
 
+
+
 def load_profile():
     conn = init_db()
     cur = conn.execute("SELECT sexe,age,taille_cm,poids_kg,activite,prot_pct,gluc_pct,lip_pct FROM profile WHERE id=1;")
@@ -377,6 +481,8 @@ def load_profile():
         return {"sexe":row[0],"age":row[1],"taille_cm":row[2],"poids_kg":row[3],
                 "activite":row[4],"repartition_macros":(row[5],row[6],row[7])}
     return {"sexe":"Homme","age":40,"taille_cm":181.0,"poids_kg":72.0,"activite":"Sédentaire","repartition_macros":(30,55,15)}
+
+
 
 
 def save_profile(p):
@@ -392,6 +498,8 @@ def save_profile(p):
     conn.commit()
 
 
+
+
 def insert_journal(date_iso, repas, nom, quantite_g, nutrients: dict):
     conn = init_db()
     conn.execute("INSERT INTO journal (date,repas,nom,quantite_g,nutrients_json) VALUES (?,?,?,?,?)",
@@ -399,10 +507,14 @@ def insert_journal(date_iso, repas, nom, quantite_g, nutrients: dict):
     conn.commit()
 
 
+
+
 def delete_journal_row(row_id: int):
     conn = init_db()
     conn.execute("DELETE FROM journal WHERE id=?", (int(row_id),))
     conn.commit()
+
+
 
 
 def fetch_journal_by_date(date_iso) -> pd.DataFrame:
@@ -419,11 +531,15 @@ def fetch_journal_by_date(date_iso) -> pd.DataFrame:
     return pd.concat([df.drop(columns=["nutrients_json"]), nutr_df], axis=1)
 
 
+
+
 def fetch_last_date_with_rows() -> str | None:
     conn = init_db()
     cur = conn.execute("SELECT date, COUNT(*) c FROM journal GROUP BY date ORDER BY date DESC;")
     r = cur.fetchone()
     return r[0] if r else None
+
+
 
 
 # ============ Chargement Excel auto ============
@@ -435,6 +551,8 @@ def build_objectif_robuste(df: pd.DataFrame) -> pd.Series:
         v = coerce_num_col(df[c])
         out = out.where(out > 0, v.fillna(0.0))
     return pd.Series([round1(x) for x in out], index=df.index, dtype=float)
+
+
 
 
 def load_assets_default():
@@ -459,6 +577,8 @@ def load_assets_default():
         st.session_state["targets_macro"] = tmac[keep]
 
 
+
+
 def macro_base_name(label: str) -> str:
     name, _ = parse_name_unit(label); nc = canon(name); ns = nc.replace(" ", "")
     if nc.startswith("energie"): return "energie"
@@ -477,6 +597,8 @@ def macro_base_name(label: str) -> str:
     return name
 
 
+
+
 # ============ Session ============
 if "foods" not in st.session_state: st.session_state["foods"] = pd.DataFrame(columns=["nom"])
 if "targets_micro" not in st.session_state: st.session_state["targets_micro"] = pd.DataFrame()
@@ -487,12 +609,16 @@ if "last_added_date" not in st.session_state: st.session_state["last_added_date"
 if "profile_targets" not in st.session_state: st.session_state["profile_targets"] = get_profile_targets_cached()
 
 
+
+
 # -- logo auto
 def _reload_default_logo():
     if DEFAULT_LOGO_PATH.exists():
         st.session_state["logo_bytes"] = DEFAULT_LOGO_PATH.read_bytes()
 _reload_default_logo()
 load_assets_default()
+
+
 
 
 def _logo_b64() -> str | None:
@@ -502,12 +628,18 @@ def _logo_b64() -> str | None:
     return base64.b64encode(data).decode() if data else None
 
 
+
+
 # ===================== HEADER + FAVICON =====================
 apply_mobile_css_and_topbar(_logo_b64())
 set_favicon_from_logo(_logo_b64())
 
 
+
+
 # ===================== PAGES modifications =====================
+
+
 
 
 # ---------- helper: improved search/fuzzy (lightweight, no extra dependency) ----------
@@ -557,6 +689,8 @@ def journal_search_candidates(foods_df: pd.DataFrame, q: str, limit: int = 12) -
     return uniq[:limit]
 
 
+
+
 # ---------- render profile (unchanged majorly) ----------
 def render_profile_page():
     st.subheader("👤 Profil")
@@ -574,8 +708,12 @@ def render_profile_page():
     st.session_state["profile"] = p
 
 
+
+
     if st.button("💾 Sauver mon profil"):
         save_profile(p); get_profile_targets_cached(); st.success("Profil enregistré.")
+
+
 
 
     profile_targets = get_profile_targets_cached()
@@ -588,10 +726,14 @@ def render_profile_page():
     fi.metric("Fibres (g)",    f"{profile_targets['fibres_g']:.1f}")
 
 
+
+
 # ---------- render journal (improved search + UX) ----------
 def render_journal_page():
     st.subheader("🧾 Journal")
     foods = st.session_state["foods"]
+
+
 
 
     # Recherche intelligente
@@ -616,7 +758,11 @@ def render_journal_page():
                         st.success(f"Ajouté : {qty_val} g de {name} (Déjeuner)")
 
 
+
+
     st.divider()
+
+
 
 
     # Ajout standard
@@ -640,12 +786,16 @@ def render_journal_page():
                 st.success(f"Ajouté : {qty} g de {nom} ({repas})")
 
 
+
+
     # Aliment personnalisé
     with st.expander("➕ Ajouter un aliment personnalisé"):
         cpa, cpb, cpc = st.columns(3)
         nom_pers = cpa.text_input("Nom de l'aliment", placeholder="ex: Mon smoothie")
         qty_pers = cpb.number_input("Quantité (g)", min_value=1, value=200, step=10, key="qty_pers")
         repas_p  = cpc.selectbox("Repas", ["Petit-déjeuner","Déjeuner","Dîner","Collation"], index=1, key="repas_p")
+
+
 
 
         st.caption("Valeurs pour 100 g (tu peux en remplir seulement quelques-unes) :")
@@ -657,15 +807,21 @@ def render_journal_page():
         ags100  = m5.number_input("AG saturés (g/100g)",0.0, step=0.5)
 
 
+
+
         n1, n2, n3 = st.columns(3)
         ala100 = n1.number_input("Oméga-3 ALA (g/100g)", 0.0, step=0.1)
         epa100 = n2.number_input("EPA (g/100g)",         0.0, step=0.1)
         dha100 = n3.number_input("DHA (g/100g)",         0.0, step=0.1)
 
 
+
+
         o1, o2 = st.columns(2)
         o6100 = o1.number_input("Oméga-6 (LA) (g/100g)", 0.0, step=0.1)
         o9100 = o2.number_input("Oméga-9 (oléique) (g/100g)", 0.0, step=0.1)
+
+
 
 
         if st.button("➕ Ajouter cet aliment personnalisé"):
@@ -690,6 +846,8 @@ def render_journal_page():
                 st.success(f"Ajouté : {qty_pers} g de {nom_pers} ({repas_p})")
 
 
+
+
     st.markdown("### Lignes du jour")
     df_day = fetch_journal_by_date(date_sel.isoformat())
     if not df_day.empty:
@@ -705,6 +863,8 @@ def render_journal_page():
         st.dataframe(df_day, use_container_width=True)
 
 
+
+
     if not df_day.empty:
         st.markdown("#### Supprimer une ligne")
         options = df_day[["id","repas","nom","quantite_g"]].copy()
@@ -713,6 +873,8 @@ def render_journal_page():
         sel_id = int(options.loc[options["label"].eq(sel_label), "id"].iloc[0])
         if st.button("🗑️ Supprimer cette ligne"):
             delete_journal_row(sel_id); st.success(f"Ligne #{sel_id} supprimée."); st.rerun()
+
+
 
 
 # ---------- bilan (inchangé sauf petites optimisations) ----------
@@ -729,6 +891,8 @@ def unify_totals_for_date(date_iso: str) -> pd.Series:
     return pd.Series(dtype=float)
 
 
+
+
 def render_bilan_page():
     st.subheader("📊 Bilan")
     default_bilan_date = dt.date.today()
@@ -741,14 +905,20 @@ def render_bilan_page():
             default_bilan_date = pd.to_datetime(last_with).date()
 
 
+
+
     date_bilan = st.date_input("Date", value=default_bilan_date, format="DD/MM/YYYY", key="date_bilan")
     df_day = fetch_journal_by_date(date_bilan.isoformat())
     totals = unify_totals_for_date(date_bilan.isoformat())
 
 
+
+
     targets_macro = st.session_state["targets_macro"].copy()
     targets_micro = st.session_state["targets_micro"].copy()
     profile_targets = st.session_state.get("profile_targets", get_profile_targets_cached())
+
+
 
 
     # === ALA : calcul conso robuste ===
@@ -761,6 +931,8 @@ def render_bilan_page():
                or ck.endswith("alag") or ck.endswith("ala") or "acidealphalinoleniquew3" in ck:
                 cols.append(c)
         return cols
+
+
 
 
     def _ala_consumed_from_day(df: pd.DataFrame, totals_series: pd.Series) -> float:
@@ -780,7 +952,11 @@ def render_bilan_page():
         return 0.0
 
 
+
+
     ala_from_day = _ala_consumed_from_day(df_day, totals)
+
+
 
 
     MACRO_KEYS = {
@@ -794,6 +970,8 @@ def render_bilan_page():
     }
 
 
+
+
     def _any_of(keys) -> float:
         for key in keys:
             if key in totals.index and pd.notna(totals[key]): return float(totals[key])
@@ -801,6 +979,8 @@ def render_bilan_page():
         for idx in totals.index:
             if canon_key(idx) in keyset and pd.notna(totals[idx]): return float(totals[idx])
         return 0.0
+
+
 
 
     def consumed_value_for_strict(label: str) -> float:
@@ -817,6 +997,8 @@ def render_bilan_page():
         for idx in totals.index:
             if canon_key(idx) == canon_key(label): return float(totals[idx])
         return 0.0
+
+
 
 
     def build_macros_df(targets_macro: pd.DataFrame, profile_targets: dict):
@@ -843,6 +1025,8 @@ def render_bilan_page():
         if "Objectif" not in df.columns: df["Objectif"] = np.nan
 
 
+
+
         # Calcul "type Excel" par défaut
         def excel_objective_for_row(nutr_label: str) -> float | None:
             base = macro_base_name(str(nutr_label))
@@ -852,7 +1036,11 @@ def render_bilan_page():
             return excel_like_targets(p)[m] if m else None
 
 
+
+
         df["Objectif"] = df["Nutriment"].apply(lambda n: excel_objective_for_row(str(n)) if str(n) else np.nan)
+
+
 
 
         # 🔒 GARANTIE : ligne ALA présente et objectif non nul
@@ -862,8 +1050,12 @@ def render_bilan_page():
             df["_base"] = df["Nutriment"].apply(macro_base_name)
 
 
+
+
         omega3_from_profile = float(profile_targets.get("ala_w3_g", excel_like_targets(p)["ala_w3_g"]))
         df.loc[df["_base"].eq("ala"), "Objectif"] = omega3_from_profile
+
+
 
 
         # Consommations + % objectifs
@@ -878,7 +1070,11 @@ def render_bilan_page():
         return df
 
 
+
+
     macros_df = build_macros_df(st.session_state["targets_macro"].copy(), profile_targets)
+
+
 
 
     def render_donuts_grid(items, cols=5, height=205):
@@ -893,6 +1089,8 @@ def render_bilan_page():
                     st.plotly_chart(fig, config=cfg, use_container_width=True)
 
 
+
+
     # === Macros principaux
     st.markdown("### 🌾 Macros principaux")
     def val_pair(base_name, fallback):
@@ -903,6 +1101,8 @@ def render_bilan_page():
         cons = pd.to_numeric(pd.Series([row.get("Consommée", 0)]), errors="coerce").fillna(0).iloc[0]
         obj  = pd.to_numeric(pd.Series([row.get("Objectif",  fallback)]), errors="coerce").fillna(fallback).iloc[0]
         return float(cons), round1(obj)
+
+
 
 
     xlt = excel_like_targets(st.session_state["profile"])
@@ -920,6 +1120,8 @@ def render_bilan_page():
     ])
 
 
+
+
     # === Acides gras essentiels
     st.markdown("### 🫒 Acides gras essentiels")
     def donut_vals(base_label: str, fallback: float):
@@ -931,6 +1133,8 @@ def render_bilan_page():
         cons = pd.to_numeric(pd.Series([row.get("Consommée", 0)]), errors="coerce").fillna(0).iloc[0]
         obj  = pd.to_numeric(pd.Series([row.get("Objectif",  fallback)]), errors="coerce").fillna(fallback).iloc[0]
         return float(cons), round1(obj)
+
+
 
 
     a_c,a_t   = donut_vals("ala",    xlt["ala_w3_g"])
@@ -947,6 +1151,8 @@ def render_bilan_page():
     ])
 
 
+
+
     # === À surveiller
     st.markdown("### ⚠️ À surveiller")
     sugars_c,sugars_t = val_pair("sucres", xlt["sucres_g"])
@@ -959,19 +1165,27 @@ def render_bilan_page():
     ], cols=3, height=200)
 
 
+
+
     # ===== Micros (barres)
     st.caption(f"<span class='dot' style='background:{COLORS['ok']}'></span>Objectif atteint  "
                f"<span class='dot' style='background:{COLORS['warn']}'></span>En cours  "
                f"<span class='dot' style='background:{COLORS['bad']}'></span>Insuffisant", unsafe_allow_html=True)
 
 
+
+
     if targets_micro.empty or "Nutriment" not in targets_micro.columns:
         st.info("Aucune ‘Cible micro’ chargée."); return
+
+
 
 
     tmi = targets_micro.copy()
     if "Objectif" not in tmi.columns or (pd.to_numeric(tmi["Objectif"], errors="coerce").fillna(0.0) == 0).all():
         tmi["Objectif"] = build_objectif_robuste(tmi)
+
+
 
 
     def consumed_micro(r):
@@ -983,14 +1197,20 @@ def render_bilan_page():
         return 0.0
 
 
+
+
     tmi["Consommée"] = tmi.apply(consumed_micro, axis=1)
     tmi["Objectif"]  = tmi["Objectif"].apply(round1)
     tmi["Consommée"] = tmi["Consommée"].apply(round1)
     tmi["% objectif"]= percent(tmi["Consommée"], tmi["Objectif"]).apply(round1)
 
 
+
+
     def is_vitamin(n: str) -> bool:
         n = strip_accents(n).lower(); return n.startswith("vit") or "vitamine" in n
+
+
 
 
     vit = tmi[tmi["Nutriment"].astype(str).apply(is_vitamin)].copy()
@@ -999,11 +1219,15 @@ def render_bilan_page():
     if not mino.empty: mino = mino.sort_values("% objectif", ascending=False)
 
 
+
+
     def pct_color(p):
         if pd.isna(p): return COLORS["warn"]
         if p < 50: return COLORS["bad"]
         if p < 100: return COLORS["warn"]
         return COLORS["ok"]
+
+
 
 
     def micro_bar(df: pd.DataFrame, title: str):
@@ -1024,10 +1248,14 @@ def render_bilan_page():
         st.plotly_chart(fig, config={"displaylogo":False,"responsive":True,"staticPlot":True}, use_container_width=True)
 
 
+
+
     st.markdown("### 🍊 Vitamines")
     micro_bar(vit,  "Vitamines — objectif vs ingéré")
     st.markdown("### 🧂 Minéraux")
     micro_bar(mino, "Minéraux — objectif vs ingéré")
+
+
 
 
 # ===================== Onglet 4 — Conseils (remplace Alimentation) =====================
@@ -1078,6 +1306,8 @@ def generate_contextual_tips(profile: dict, totals: pd.Series) -> tuple[list[str
     chosen_tips = pool_tips[:4] if len(pool_tips) >= 4 else pool_tips
 
 
+
+
     motiv_pool = [
         "Super boulot — chaque petit choix compte, continue comme ça 💪",
         "Une habitude à la fois : rappelle-toi pourquoi tu as commencé ✨",
@@ -1090,7 +1320,11 @@ def generate_contextual_tips(profile: dict, totals: pd.Series) -> tuple[list[str
     chosen_motiv = motiv_pool[:3]
 
 
+
+
     return chosen_tips, chosen_motiv
+
+
 
 
 def render_conseils_page():
@@ -1116,6 +1350,8 @@ def render_conseils_page():
         st.info("✨ " + m)
 
 
+
+
     st.divider()
     # conseils pratiques (liste)
     st.markdown("### Conseils pratiques & naturopathiques")
@@ -1123,10 +1359,14 @@ def render_conseils_page():
         st.write("• " + t)
 
 
+
+
     st.divider()
     # conserve les cartes macro / micro si disponibles (valeur ajoutée)
     targets_macro = st.session_state.get("targets_macro", pd.DataFrame()).copy()
     targets_micro = st.session_state.get("targets_micro", pd.DataFrame()).copy()
+
+
 
 
     def show_cards(df: pd.DataFrame, title: str, default_emoji: str):
@@ -1152,6 +1392,8 @@ def render_conseils_page():
         st.markdown('</div>', unsafe_allow_html=True)
 
 
+
+
     if not targets_macro.empty:
         show_cards(targets_macro, "🌾 Macro — rôles & bénéfices", "🥗")
     if not targets_micro.empty:
@@ -1162,12 +1404,16 @@ def render_conseils_page():
         if not mino.empty: show_cards(mino, "🧂 Minéraux — rôles & bénéfices",   "🧂")
 
 
+
+
 # ===================== Tabs =====================
 tab_profile, tab_journal, tab_bilan, tab_food = st.tabs(["👤 Profil", "🧾 Journal", "📊 Bilan", "💡 Conseils"])
 with tab_profile: render_profile_page()
 with tab_journal: render_journal_page()
 with tab_bilan:   render_bilan_page()
 with tab_food:    render_conseils_page()
+
+
 
 
 # ===================== Export/Import (conservé) =====================
@@ -1186,11 +1432,15 @@ def fetch_all_journal() -> pd.DataFrame:
     return pd.concat([df.drop(columns=["nutrients_json"]), nutr_df], axis=1)
 
 
+
+
 def to_excel_bytes(df: pd.DataFrame) -> bytes:
     out = io.BytesIO()
     with pd.ExcelWriter(out, engine="openpyxl") as writer:
         df.to_excel(writer, index=False, sheet_name="Journal")
     return out.getvalue()
+
+
 
 
 cE, cI = st.columns(2)
@@ -1225,6 +1475,8 @@ with cI:
             st.error(f"Import impossible : {e}")
 
 
+
+
 # ===================== Diagnostic léger =====================
 with st.expander("🛠️ Diagnostic (ouvrir seulement si besoin)"):
     st.write("Assets dir:", str(ASSETS_DIR), "exists:", ASSETS_DIR.exists())
@@ -1253,6 +1505,16 @@ with st.expander("🛠️ Diagnostic (ouvrir seulement si besoin)"):
             s = pd.DataFrame(df_dbg[ala_cols]).apply(pd.to_numeric, errors="coerce").fillna(0.0)
             st.write("Somme ALA (débug):", float(s.sum(numeric_only=True).sum()))
     st.write("Build:", VERSION)
+
+
+
+
+
+
+
+
+
+
 
 
 
