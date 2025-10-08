@@ -175,7 +175,7 @@ def apply_mobile_css_and_topbar(logo_b64: str | None):
     # - fix malformed rgba decimals (e.g. rgba(...,08) -> 0.08)
     # - force light color-scheme so browsers/extensions won't forcibly invert/gray colors
     # - protect images/svg/canvas and text fill from forced dark filters
-    st.markdown(f\"\"\"
+    st.markdown(f"""
     <style>
     [data-testid="stToolbar"], [data-testid="stDecoration"], [data-testid="stStatusWidget"], header, footer {{display:none!important;}}
     /* force light color scheme for browsers that respect it */
@@ -219,29 +219,28 @@ def apply_mobile_css_and_topbar(logo_b64: str | None):
     /* keep text fill color strict */
     * {{ -webkit-text-fill-color: unset; }}
     </style>
-    \"\"\", unsafe_allow_html=True)
+    """, unsafe_allow_html=True)
 
     # Inject JS to reinforce theme color / color-scheme (helps some Android browsers)
-    st.markdown(f\"\"\"
+    st.markdown(f"""
     <script>
       (function(){{
         try {{
           document.documentElement.style.colorScheme = 'light';
           document.documentElement.style.setProperty('--bg', '#ffffff');
-          var m = document.querySelector('meta[name=\"theme-color\"]');
+          var m = document.querySelector('meta[name="theme-color"]');
           if(!m) {{ m = document.createElement('meta'); m.name = 'theme-color'; document.head.appendChild(m); }}
           m.content = '#ffffff';
         }} catch(e){{ console && console.warn && console.warn('color-scheme set failed', e); }}
       }})();
     </script>
-    \"\"\", unsafe_allow_html=True)
-
-    logo_html = f\"<img class='topbar-logo' src='data:image/png;base64,{logo_b64}' alt='logo'/>\" if logo_b64 else \"\"
-    st.markdown(f\"\"\"
-    <div class=\"topbar\">
+    """, unsafe_allow_html=True)
+    logo_html = f"<img class='topbar-logo' src='data:image/png;base64,{logo_b64}' alt='logo'/>" if logo_b64 else ""
+    st.markdown(f"""
+    <div class="topbar">
       <div>{logo_html}</div>
     </div>
-    \"\"\", unsafe_allow_html=True)
+    """, unsafe_allow_html=True)
 
 def set_favicon_from_logo(logo_b64: str | None):
     if not logo_b64: return
