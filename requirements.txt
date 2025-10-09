@@ -1,5 +1,5 @@
 streamlit==1.30.0
-supabase==1.6.0
+supabase==2.22.0
 stripe==5.0.0
 pandas==2.1.0
 plotly==5.16.0
