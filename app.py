@@ -12,6 +12,64 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import streamlit as st
+# --- DEBUT : Init Supabase & Stripe (AJOUT) ---
+import stripe
+from supabase import create_client
+
+# Lecture des secrets (Streamlit Cloud ou .streamlit/secrets.toml)
+SUPABASE_URL = st.secrets["SUPABASE_URL"]
+SUPABASE_ANON_KEY = st.secrets["SUPABASE_ANON_KEY"]
+# service role key (sensible) — on l'utilisera côté serveur
+SUPABASE_SERVICE_ROLE_KEY = st.secrets.get("SUPABASE_SERVICE_ROLE_KEY")
+
+STRIPE_PUBLISHABLE_KEY = st.secrets.get("STRIPE_PUBLISHABLE_KEY")
+STRIPE_SECRET_KEY = st.secrets.get("STRIPE_SECRET_KEY")
+STRIPE_PRICE_ID = st.secrets.get("STRIPE_PRICE_ID")
+
+# Clients
+supabase = create_client(SUPABASE_URL, SUPABASE_ANON_KEY)  # client public (auth)
+# stripe secret key côté serveur
+stripe.api_key = STRIPE_SECRET_KEY
+
+# Helpers d'auth (très simples)
+def supabase_sign_up(email: str, password: str):
+    """Inscription par email+password (dev/test)."""
+    return supabase.auth.sign_up({"email": email, "password": password})
+
+def supabase_sign_in(email: str, password: str):
+    """Connexion — stocke session/user dans st.session_state si succès."""
+    res = supabase.auth.sign_in_with_password({"email": email, "password": password})
+    # certaines versions renvoient {'session':..., 'user':...}
+    if res and isinstance(res, dict) and res.get("session") and res.get("user"):
+        st.session_state["supabase_session"] = res["session"]
+        st.session_state["user"] = res["user"]
+    return res
+
+def supabase_sign_out():
+    try:
+        supabase.auth.sign_out()
+    except Exception:
+        pass
+    st.session_state.pop("supabase_session", None)
+    st.session_state.pop("user", None)
+
+def get_current_user():
+    return st.session_state.get("user")
+
+# Helper Stripe : créer une session Checkout (server-side)
+def create_stripe_checkout_session(user_id: str, success_url: str, cancel_url: str):
+    """Crée une session Stripe Checkout (mode paiement unique)."""
+    session = stripe.checkout.Session.create(
+        payment_method_types=["card"],
+        mode="payment",
+        line_items=[{"price": STRIPE_PRICE_ID, "quantity": 1}],
+        success_url=success_url + "?session_id={CHECKOUT_SESSION_ID}",
+        cancel_url=cancel_url,
+        metadata={"user_id": str(user_id)},
+    )
+    return session
+# --- FIN : Init Supabase & Stripe (AJOUT) ---
+
 import plotly.graph_objects as go
 import openpyxl
 
@@ -1505,6 +1563,7 @@ with st.expander("🛠️ Diagnostic (ouvrir seulement si besoin)"):
             s = pd.DataFrame(df_dbg[ala_cols]).apply(pd.to_numeric, errors="coerce").fillna(0.0)
             st.write("Somme ALA (débug):", float(s.sum(numeric_only=True).sum()))
     st.write("Build:", VERSION)
+
 
 
 
