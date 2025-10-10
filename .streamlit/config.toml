@@ -1,3 +1,2 @@
-sudo sysctl fs.inotify.max_user_watches=524288
-# pour le rendre persistant, ajouter dans /etc/sysctl.conf :
-# fs.inotify.max_user_watches=524288
+[server]
+fileWatcherType = "none"
