@@ -1,0 +1,5 @@
+[server]
+headless = true
+port = 8501
+# On retire enableCORS pour éviter le conflit avec enableXsrfProtection
+# Si besoin plus tard, on pourra autoriser des origines spécifiques.
