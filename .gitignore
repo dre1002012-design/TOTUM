@@ -4,3 +4,5 @@ totum.db
 .env
 .venv/
 venv/
+
+backup_untracked/
