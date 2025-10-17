@@ -1,217 +1,152 @@
-# auth_api/auth_api.py
-"""
-Petit serveur Flask pour :
-- créer une session Stripe Checkout (paiement à vie 2,99€)
-- recevoir le webhook Stripe et marquer l'utilisateur en 'lifetime' dans Supabase
-- vérifier le statut d'abonnement d'un utilisateur
-
-Mode d'emploi rapide :
-1) Installer dépendances: pip install -r requirements.txt
-2) Créer un fichier .env à partir de .env.example et remplir les clés réelles.
-3) Lancer: python auth_api.py
-4) Exposer en public (ngrok) pour tester webhooks Stripe si en local.
-"""
+# auth_api.py
+# API simple pour créer la session de paiement et lire l'état d'abonnement.
+# Cette version :
+# - envoie l'user_id à Stripe (client_reference_id + metadata)
+# - ajoute /success comme filet de sécurité pour mettre à jour Supabase après paiement
+# - lit toutes les clés dans .env (PAS de clé en dur)
 
 import os
-import json
-from datetime import datetime
+from datetime import datetime, timezone
 
 from flask import Flask, request, jsonify, abort
-import stripe
-import requests
 from dotenv import load_dotenv
+import stripe
 
-# Chargement des variables d'environnement depuis .env (local uniquement)
-load_dotenv()
+from supabase import create_client
 
-# Variables (remplir dans .env)
-SUPABASE_URL = os.getenv("SUPABASE_URL")  # ex: https://xxxx.supabase.co
-SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+load_dotenv()  # lit auth_api/.env
+
+# Récupération des variables d'environnement
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY") or os.getenv("SUPABASE_KEY")
 STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY")
-STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET")
-APP_DOMAIN = os.getenv("APP_DOMAIN", "http://localhost:5000")
-PORT = int(os.getenv("PORT", 5001))
+APP_DOMAIN = os.getenv("APP_DOMAIN", "http://localhost:5001")  # page de retour
+PORT = int(os.getenv("PORT", "5001"))
+PRICE_ID = os.getenv("PRICE_ID")  # optionnel : si tu as créé un Price Stripe fixe
 
-# Vérifications simples
-if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
-    raise RuntimeError("Variables SUPABASE_URL et SUPABASE_SERVICE_ROLE_KEY doivent être définies dans .env")
-if not STRIPE_SECRET_KEY or not STRIPE_WEBHOOK_SECRET:
-    raise RuntimeError("STRIPE_SECRET_KEY et STRIPE_WEBHOOK_SECRET doivent être définies dans .env")
+# Vérifs minimum pour éviter les surprises
+missing = []
+if not SUPABASE_URL: missing.append("SUPABASE_URL")
+if not SUPABASE_SERVICE_ROLE_KEY: missing.append("SUPABASE_SERVICE_ROLE_KEY (ou SUPABASE_KEY)")
+if not STRIPE_SECRET_KEY: missing.append("STRIPE_SECRET_KEY")
+if missing:
+    raise RuntimeError("Variables manquantes dans .env : " + ", ".join(missing))
 
+# Init clients
 stripe.api_key = STRIPE_SECRET_KEY
+supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
 
 app = Flask(__name__)
 
-# ----------------------
-# Helper: appeler Supabase (REST)
-# ----------------------
-def supabase_patch_profile(user_id, patch_data):
-    """
-    Met à jour la table profiles pour l'utilisateur user_id.
-    patch_data doit être un dict avec les champs à mettre à jour.
-    """
-    url = f"{SUPABASE_URL}/rest/v1/profiles"
-    headers = {
-        "apikey": SUPABASE_SERVICE_ROLE_KEY,
-        "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}",
-        "Content-Type": "application/json",
-        # Demande à Supabase de retourner la ligne modifiée
-        "Prefer": "return=representation"
-    }
-    params = {"id": f"eq.{user_id}"}
-    # Supabase REST PATCH : on envoie PATCH vers /profiles?id=eq.<user_id>
-    response = requests.patch(url, params=params, headers=headers, json=patch_data)
-    if response.status_code not in (200, 201):
-        # Si erreur, on renvoie le message pour debug
-        raise RuntimeError(f"Erreur Supabase PATCH: {response.status_code} - {response.text}")
-    return response.json()
+def _update_profile_lifetime(user_id: str):
+    """Met is_lifetime=True + lifetime_since maintenant pour le profil donné."""
+    lifetime_since = datetime.now(timezone.utc).isoformat()
+    try:
+        resp = supabase.table("profiles").update({
+            "is_lifetime": True,
+            "lifetime_since": lifetime_since
+        }).eq("id", user_id).execute()
 
-def supabase_insert_payment(payment_row):
-    """
-    Ajoute une ligne dans la table payments.
-    payment_row : dict avec les champs (user_id, stripe_payment_intent_id, amount, currency, status, ...)
-    """
-    url = f"{SUPABASE_URL}/rest/v1/payments"
-    headers = {
-        "apikey": SUPABASE_SERVICE_ROLE_KEY,
-        "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}",
-        "Content-Type": "application/json",
-        "Prefer": "return=representation"
-    }
-    response = requests.post(url, headers=headers, json=payment_row)
-    if response.status_code not in (200, 201):
-        raise RuntimeError(f"Erreur Supabase INSERT payment: {response.status_code} - {response.text}")
-    return response.json()
+        data = getattr(resp, "data", resp)
+        if isinstance(data, list) and len(data) > 0:
+            app.logger.info(f"[SUPABASE] Profil {user_id} mis à jour.")
+            return True
+        else:
+            app.logger.warning(f"[SUPABASE] Aucune ligne modifiée pour {user_id}. Réponse: {data}")
+            return False
+    except Exception as e:
+        app.logger.error(f"[SUPABASE] Erreur maj profil {user_id}: {e}")
+        return False
 
-# ----------------------
-# Endpoint: créer une session Stripe Checkout
-# ----------------------
 @app.route("/create-checkout-session", methods=["POST"])
 def create_checkout_session():
-    """
-    Attendu JSON en entrée : { "user_id": "<id_supabase_user>" }
-    Retourne : { "url": "<stripe_checkout_url>" }
-    """
-    data = request.get_json(silent=True)
-    if not data or "user_id" not in data:
-        return jsonify({"error": "Veuillez envoyer JSON avec user_id"}), 400
-
-    user_id = data["user_id"]
-
+    """Crée la session Stripe en y joignant l'user_id."""
     try:
-        # Si tu as créé un Price dans Stripe pour 2.99€, tu peux utiliser son ID (recommandé).
-        # Ici on crée un line_item avec price_data pour être sûr que ça marche sans ID de price.
-        session = stripe.checkout.Session.create(
-            payment_method_types=["card"],
-            mode="payment",
-            # Prix en centimes : 2.99 EUR => 299
-            line_items=[{
+        data = request.get_json(force=True) or {}
+        user_id = data.get("user_id")
+        if not user_id:
+            return jsonify(error="user_id manquant"), 400
+
+        # URLs de retour (succès et annulation)
+        success_url = f"{APP_DOMAIN}/success?session_id={{CHECKOUT_SESSION_ID}}"
+        cancel_url = f"{APP_DOMAIN}/cancel"
+
+        # Ligne d'achat : au choix un PRICE_ID existant, sinon un prix inline à 2,99 €
+        if PRICE_ID:
+            line_items = [{"price": PRICE_ID, "quantity": 1}]
+        else:
+            line_items = [{
                 "price_data": {
                     "currency": "eur",
-                    "product_data": {
-                        "name": "Totum — Abonnement à vie",
-                    },
-                    "unit_amount": 299
+                    "product_data": {"name": "Totum – abonnement à vie"},
+                    "unit_amount": 299  # 2,99 € (centimes)
                 },
                 "quantity": 1
-            }],
-            success_url=f"{APP_DOMAIN}/success?session_id={{CHECKOUT_SESSION_ID}}",
-            cancel_url=f"{APP_DOMAIN}/cancel",
-            # Renvoyer l'id utilisateur pour relier le paiement à l'utilisateur
-            client_reference_id=user_id,
-            metadata={"user_id": user_id}
+            }]
+
+        session = stripe.checkout.Session.create(
+            mode="payment",
+            line_items=line_items,
+            success_url=success_url,
+            cancel_url=cancel_url,
+            client_reference_id=user_id,         # 🔑 passe l'user_id ici
+            metadata={"user_id": user_id}        # 🔑 et aussi ici (double filet)
         )
-        return jsonify({"url": session.url, "id": session.id}), 200
+
+        return jsonify({"id": session.id, "url": session.url})
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        app.logger.error(f"[STRIPE] Erreur création session: {e}")
+        return jsonify(error=str(e)), 500
 
-# ----------------------
-# Endpoint: webhook Stripe (pour recevoir l'événement paiement réussi)
-# ----------------------
-@app.route("/stripe-webhook", methods=["POST"])
-def stripe_webhook():
-    # Lire payload brut et header de signature
-    payload = request.data
-    sig_header = request.headers.get("Stripe-Signature", None)
-    if sig_header is None:
-        return "Missing signature", 400
-
-    try:
-        event = stripe.Webhook.construct_event(payload, sig_header, STRIPE_WEBHOOK_SECRET)
-    except stripe.error.SignatureVerificationError:
-        return "Signature verification failed", 400
-    except Exception as e:
-        return f"Webhook error: {str(e)}", 400
-
-    # Traiter l'événement
-    if event["type"] == "checkout.session.completed":
-        session = event["data"]["object"]
-        # Récupère user_id (on l'a mis dans client_reference_id et/ou metadata)
-        user_id = session.get("client_reference_id") or session.get("metadata", {}).get("user_id")
-        payment_intent = session.get("payment_intent")
-        amount_total = session.get("amount_total")  # en centimes
-        currency = session.get("currency", "eur")
-        status = session.get("payment_status", "unknown")
-
-        # On met à jour Supabase : is_lifetime = true, lifetime_since = now
-        try:
-            # 1) Insérer la ligne payment pour l'historique (optionnel mais utile)
-            payment_row = {
-                "user_id": user_id,
-                "stripe_payment_intent_id": payment_intent,
-                "stripe_checkout_session_id": session.get("id"),
-                "amount": (amount_total / 100) if amount_total else None,
-                "currency": currency,
-                "status": status,
-                "created_at": datetime.utcnow().isoformat() + "Z"
-            }
-            supabase_insert_payment(payment_row)
-        except Exception as e:
-            # on continue même si l'insert échoue, mais log l'erreur
-            print("Warning: impossible d'insérer payment:", e)
-
-        try:
-            patch_data = {
-                "is_lifetime": True,
-                "lifetime_since": datetime.utcnow().isoformat() + "Z"
-            }
-            updated = supabase_patch_profile(user_id, patch_data)
-            print("Profil mis à jour pour user:", user_id, "->", updated)
-        except Exception as e:
-            print("Erreur lors de la mise à jour Supabase:", e)
-            # Ne pas renvoyer 500 à Stripe : renvons 200 pour éviter re-tentatives infinies.
-            return jsonify({"received": True, "error": str(e)}), 200
-
-    # Pour tous les autres événements, on répond simplement 200
-    return jsonify({"received": True}), 200
-
-# ----------------------
-# Endpoint: vérifier le statut d'abonnement
-# ----------------------
 @app.route("/subscription-status/<user_id>", methods=["GET"])
 def subscription_status(user_id):
-    """
-    Récupère le profil depuis Supabase pour savoir si is_lifetime est vrai.
-    """
-    url = f"{SUPABASE_URL}/rest/v1/profiles?id=eq.{user_id}"
-    headers = {
-        "apikey": SUPABASE_SERVICE_ROLE_KEY,
-        "Authorization": f"Bearer {SUPABASE_SERVICE_ROLE_KEY}"
-    }
-    r = requests.get(url, headers=headers)
-    if r.status_code != 200:
-        return jsonify({"error": "Impossible de récupérer le profil", "details": r.text}), 500
-    rows = r.json()
-    if not rows:
-        return jsonify({"error": "Utilisateur non trouvé"}), 404
-    profile = rows[0]
-    is_lifetime = profile.get("is_lifetime", False)
-    lifetime_since = profile.get("lifetime_since", None)
-    return jsonify({"is_lifetime": bool(is_lifetime), "lifetime_since": lifetime_since}), 200
+    """Retourne is_lifetime et lifetime_since pour l'utilisateur."""
+    try:
+        resp = supabase.table("profiles") \
+            .select("is_lifetime,lifetime_since") \
+            .eq("id", user_id) \
+            .execute()
+        data = getattr(resp, "data", [])
+        if isinstance(data, list) and data:
+            row = data[0]
+            return jsonify(
+                is_lifetime=bool(row.get("is_lifetime")),
+                lifetime_since=row.get("lifetime_since")
+            )
+        else:
+            return jsonify(is_lifetime=False, lifetime_since=None)
+    except Exception as e:
+        app.logger.error(f"[SUPABASE] Erreur lecture statut: {e}")
+        return jsonify(error="lecture_statut_impossible"), 500
 
-# ----------------------
-# Point d'entrée
-# ----------------------
+@app.route("/success", methods=["GET"])
+def success():
+    """
+    Page de succès.
+    Filet de sécurité : on relit la session Stripe, on récupère user_id,
+    et on met à jour Supabase ici aussi (en plus du webhook).
+    """
+    try:
+        session_id = request.args.get("session_id")
+        if not session_id:
+            return "Session_id manquant", 400
+
+        session = stripe.checkout.Session.retrieve(session_id)
+        user_id = session.get("client_reference_id") or (session.get("metadata") or {}).get("user_id")
+
+        if not user_id:
+            return "Paiement OK, mais impossible d’identifier l’utilisateur (user_id manquant).", 200
+
+        _update_profile_lifetime(user_id)
+        return "Paiement confirmé. Abonnement activé. Vous pouvez fermer cette page.", 200
+    except Exception as e:
+        app.logger.error(f"[SUCCESS] Erreur: {e}")
+        return f"Erreur: {e}", 200
+
+@app.route("/cancel", methods=["GET"])
+def cancel():
+    return "Paiement annulé. Vous pouvez fermer cette page.", 200
+
 if __name__ == "__main__":
-    print("Lancement auth_api sur le port", PORT)
+    print(f"Lancement auth_api sur le port {PORT}")
     app.run(host="0.0.0.0", port=PORT, debug=True)
