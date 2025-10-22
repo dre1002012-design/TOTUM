@@ -1,8 +1,6 @@
 # pages/01_Statut_abonnement.py
-# Page Streamlit pour:
-# - afficher le statut d'abonnement (is_lifetime)
-# - générer un lien de paiement si non actif
-# Version en ligne : timeout allongé + 2e essai automatique
+# Page Statut qui lit automatiquement le user_id mémorisé (00_Connexion).
+# Si absent, utilise un user_id de démo et permet de le saisir.
 
 import time
 import requests
@@ -11,20 +9,25 @@ import streamlit as st
 st.set_page_config(page_title="Statut abonnement", page_icon="💳", layout="centered")
 st.title("💳 Statut de votre abonnement Totum")
 
-# ⚠️ À remplacer plus tard par l'ID réel de l'utilisateur connecté
-DEFAULT_USER_ID = "d583cd6f-649f-41f3-8186-ba4073f2fb03"
-
-with st.form("user_form"):
-    user_id = st.text_input("Identifiant utilisateur (user_id)", value=DEFAULT_USER_ID)
-    submitted = st.form_submit_button("Vérifier le statut")
-
-if not submitted:
-    user_id = DEFAULT_USER_ID
-
 # 👉 API en ligne (Render)
 AUTH_API_BASE = "https://totum.onrender.com"
 
-TIMEOUT_S = 40  # 1er appel peut être lent (réveil du serveur)
+# Si un user_id est mémorisé (via 00_Connexion), on l'utilise
+session_uid = st.session_state.get("user_id")
+
+# Sinon on propose un champ + une valeur de démo
+DEFAULT_USER_ID = "d583cd6f-649f-41f3-8186-ba4073f2fb03"
+
+if session_uid:
+    st.caption(f"Utilisateur mémorisé : `{session_uid}`")
+    user_id = session_uid
+else:
+    st.info("Aucun utilisateur mémorisé. Collez un user_id ou utilisez la page « 00_Connexion ».")
+    with st.form("user_form"):
+        user_id = st.text_input("Identifiant utilisateur (user_id)", value=DEFAULT_USER_ID)
+        st.form_submit_button("Vérifier le statut")
+
+TIMEOUT_S = 40
 RETRY_DELAY = 3
 
 def _safe_get(url: str):
@@ -33,7 +36,6 @@ def _safe_get(url: str):
         r.raise_for_status()
         return r.json()
     except Exception:
-        # 2e essai après petite pause
         time.sleep(RETRY_DELAY)
         r = requests.get(url, timeout=TIMEOUT_S)
         r.raise_for_status()
