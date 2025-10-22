@@ -50,3 +50,54 @@ def set_favicon_from_logo(logo_b64: str | None):
       document.head.appendChild(link);
     </script>
     """, unsafe_allow_html=True)
+def apply_journal_style():
+    """Style supplémentaire pour l’onglet Journal (mobile-friendly)."""
+    st.markdown(
+        """
+        <style>
+        /* --- Layout général --- */
+        .stApp { font-family: 'Inter', sans-serif; }
+        .block-container { padding-top: 0.8rem; padding-bottom: 3rem; }
+
+        /* --- Titres de sections --- */
+        h4, h5, h6 {
+            color: #ff7f3f;
+            font-weight: 600;
+        }
+
+        /* --- Boutons principaux --- */
+        button[kind="primary"], .stButton>button {
+            background-color: #ff7f3f !important;
+            color: white !important;
+            border: none !important;
+            border-radius: 0.6rem !important;
+            font-weight: 600 !important;
+        }
+
+        /* --- Metrics en tête --- */
+        [data-testid="stMetricLabel"] {
+            font-weight: 600;
+            color: #444;
+        }
+        [data-testid="stMetricDelta"] {
+            font-size: 0.8rem;
+            opacity: 0.7;
+        }
+
+        /* --- Inputs compacts pour mobile --- */
+        input[type="number"], select, textarea {
+            border-radius: 0.4rem !important;
+            font-size: 0.95rem !important;
+        }
+
+        /* --- Lignes du journal --- */
+        div[data-testid="stDataFrame"] table {
+            font-size: 0.9rem !important;
+        }
+
+        /* --- Dividers allégés --- */
+        hr { margin: 0.8rem 0 !important; }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
