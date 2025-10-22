@@ -24,23 +24,23 @@ def _char_overlap_score(a: str, b: str) -> float:
 def build_search_index(df: pd.DataFrame) -> pd.DataFrame:
     """
     Ajoute _canon (nom normalisé) et ne garde que les colonnes utiles.
-    (Dédup sur les colonnes du df, pas sur la liste 'keep'.)
+    (dédup sur colonnes réelles et sur la liste keep)
     """
     if df is None or df.empty:
         return pd.DataFrame(columns=["nom", "_canon"])
 
     idx = df.copy()
-    # dédup colonnes côté df (par sécurité)
+    # dédup colonnes côté df
     idx = idx.loc[:, ~idx.columns.duplicated()].copy()
 
-    # colonne 'nom' obligatoire
+    # 'nom' obligatoire
     if "nom" not in idx.columns:
         idx["nom"] = ""
 
     idx["nom"] = idx["nom"].astype(str)
     idx["_canon"] = idx["nom"].apply(canon)
 
-        # on ne garde que ce qui existe réellement (et on déduplique l’ordre)
+    # ne garder que ce qui existe vraiment, en évitant les doublons
     keep = ["nom", "_canon"] + [c for c in RESULT_COLS if c in idx.columns]
     keep_unique = []
     for c in keep:
@@ -49,8 +49,18 @@ def build_search_index(df: pd.DataFrame) -> pd.DataFrame:
     idx = idx[keep_unique]
     return idx
 
-
-
+@st.cache_data(
+    show_spinner=False,
+    max_entries=256,
+    ttl=120,  # 2 minutes
+    hash_funcs={
+        pd.DataFrame: lambda d: (
+            len(d),
+            tuple(d.columns),
+            tuple(d["_canon"].head(64)) if "_canon" in d.columns else ()
+        )
+    },
+)
 def search_foods(index_df: pd.DataFrame, query: str, limit: int = 30, page: int = 1) -> pd.DataFrame:
     """
     Recherche en 4 passes puis score final avec boosts :
@@ -58,36 +68,36 @@ def search_foods(index_df: pd.DataFrame, query: str, limit: int = 30, page: int 
       2) all tokens present (AND)
       3) contains
       4) fallback similarité caractères
-    Boosts : favoris (score +1), récents (score +0.5)
-    Pagination par page (1-indexed).
+    Boosts : favoris (+1), récents (+0.5). Pagination simple.
     """
     if index_df is None or index_df.empty:
         return index_df
 
     q = (query or "").strip()
     if not q:
-        # si pas de requête: on met en avant favoris puis récents
+        # si pas de requête: mettre en avant favoris puis récents
         res = index_df.copy()
-        res = res.loc[:, ~res.columns.duplicated()].copy()        
+        res = res.loc[:, ~res.columns.duplicated()].copy()
         favs = set(st.session_state.get("fav_foods", []))
-        recs = st.session_state.get("recent_foods", [])
+        recs = st.session_state.get("recent_foods", []) or []
         recs_set = set(recs)
         res["_score"] = 0.0
         res.loc[res["nom"].isin(recs_set), "_score"] += 0.5
-        res.loc[res["nom"].isin(favs), "_score"] += 1.0
+        res.loc[res["nom"].isin(favs),     "_score"] += 1.0
         res = res.sort_values("_score", ascending=False).drop(columns=["_score"])
-        start = (max(page,1)-1)*limit
-        return res.iloc[start:start+limit]
+        start = (max(int(page),1)-1)*int(limit)
+        return res.iloc[start:start+int(limit)]
 
     q_canon = canon(q)
     tokens = [t for t in q_canon.split(" ") if t]
 
+    # Passes successives
     m1 = index_df["_canon"].str.startswith(q_canon, na=False)
     part1 = index_df[m1]
 
+    remain = index_df[~m1]
     def all_tokens_present(s: str) -> bool:
         return all(t in s for t in tokens)
-    remain = index_df[~m1]
     m2 = remain["_canon"].apply(all_tokens_present) if tokens else pd.Series(False, index=remain.index)
     part2 = remain[m2]
     remain = remain[~m2]
@@ -101,18 +111,19 @@ def search_foods(index_df: pd.DataFrame, query: str, limit: int = 30, page: int 
 
     out = pd.concat([part1, part2, part3, part4]).drop_duplicates(subset=["nom"], keep="first")
 
-    # Boosts
+    # Boosts favoris/récents
     favs = set(st.session_state.get("fav_foods", []))
-    recs = st.session_state.get("recent_foods", [])
+    recs = st.session_state.get("recent_foods", []) or []
     recs_set = set(recs)
     out["_score_boost"] = 0.0
     out.loc[out["nom"].isin(recs_set), "_score_boost"] += 0.5
     out.loc[out["nom"].isin(favs),     "_score_boost"] += 1.0
 
-    # Classement: priorité de passe (position) + boost
+    # Classement final
     out["_rank"] = range(len(out))
-    out = out.sort_values(["_score_boost", "_rank"], ascending=[False, True]).drop(columns=["_score_boost", "_rank"])
+    out = out.sort_values(["_score_boost", "_rank"], ascending=[False, True])\
+             .drop(columns=["_score_boost", "_rank"])
 
     # Pagination
-    start = (max(page,1)-1)*limit
-    return out.iloc[start:start+limit]
+    start = (max(int(page),1)-1)*int(limit)
+    return out.iloc[start:start+int(limit)]
