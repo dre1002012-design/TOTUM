@@ -14,6 +14,14 @@ import pandas as pd
 import streamlit as st
 import plotly.graph_objects as go
 import openpyxl
+# === imports modules (préparation split onglets) ===
+from calorie_app.core.state import ensure_session_defaults, get_logo_b64
+from calorie_app.core.style import apply_mobile_css_and_topbar, set_favicon_from_logo
+from calorie_app.tabs.profile_tab import render_profile_tab
+from calorie_app.tabs.journal_tab import render_journal_tab
+from calorie_app.tabs.bilan_tab import render_bilan_tab
+from calorie_app.tabs.conseil_tab import render_conseil_tab
+from calorie_app.core.data import load_profile
 
 
 
@@ -1406,12 +1414,19 @@ def render_conseils_page():
 
 
 
-# ===================== Tabs =====================
-tab_profile, tab_journal, tab_bilan, tab_food = st.tabs(["👤 Profil", "🧾 Journal", "📊 Bilan", "💡 Conseils"])
-with tab_profile: render_profile_page()
-with tab_journal: render_journal_page()
-with tab_bilan:   render_bilan_page()
-with tab_food:    render_conseils_page()
+# ===================== Tabs (split) =====================
+tab_profile, tab_journal, tab_bilan, tab_conseil = st.tabs(
+    ["👤 Profil", "🧾 Journal", "📊 Bilan", "💡 Conseils"]
+)
+with tab_profile:
+    render_profile_tab(load_profile)
+with tab_journal:
+    render_journal_tab()
+with tab_bilan:
+    render_bilan_tab()
+with tab_conseil:
+    render_conseil_tab()
+
 
 
 
