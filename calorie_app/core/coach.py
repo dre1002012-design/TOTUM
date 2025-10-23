@@ -1,9 +1,9 @@
 # calorie_app/core/coach.py
 import datetime as dt
 import pandas as pd
-from typing import Dict, List
+from typing import Dict, List, Tuple
 
-# --- Clés et labels lisibles ---
+# --- Clés et labels (lisibles) ---
 NUTRI_LIMIT_KEYS = {
     "Sucres_g": "🍬 Sucres",
     "AG_saturés_g": "🥓 AG saturés",
@@ -71,9 +71,9 @@ def _map_target_key(col: str) -> str:
 def weekly_targets_from_daily(daily: Dict[str, float]) -> Dict[str, float]:
     return {k: float(v or 0.0) * 7.0 for k, v in daily.items()}
 
-# ---------------- Core analyses ----------------
+# ---------------- Analyses ----------------
 def analyze_week(week: pd.Series, week_targets: Dict[str, float]) -> Dict:
-    """Diagnostic semaine : forces, manques, excès."""
+    """Diagnostic 7j : forces, manques (<80%), excès (limites dépassées)."""
     strengths, gaps, limits_excess = [], [], []
 
     # À viser (couverture %)
@@ -81,43 +81,41 @@ def analyze_week(week: pd.Series, week_targets: Dict[str, float]) -> Dict:
         v = float(week.get(k, 0.0) or 0.0)
         t = float(week_targets.get(_map_target_key(k), 0.0) or 0.0)
         cov = coverage(v, t)
-        if cov is None: 
+        if cov is None:
             continue
         if cov >= 100:
             strengths.append(f"{label} : {cov:.0f}% ✅")
-        elif cov < 80:   # seuil relevé (plus sensible)
+        elif cov < 80:
             gaps.append((label, cov))
 
-    # À limiter (dépassements)
+    # À limiter
     for k, label in NUTRI_LIMIT_KEYS.items():
         v = float(week.get(k, 0.0) or 0.0)
         t = float(week_targets.get(_map_target_key(k), 0.0) or 0.0)
         if t and v > t:
             limits_excess.append((label, v, t))
 
-    # top 3 manques / top 3 excès
     gaps = sorted(gaps, key=lambda x: (x[1] if x[1] is not None else 999))[:3]
     limits_excess = limits_excess[:3]
     return {"strengths": strengths[:3], "gaps": gaps, "limits": limits_excess}
 
 def analyze_today(today: pd.Series, daily_targets: Dict[str, float]) -> Dict:
-    """Analyses du jour (réagit immédiatement: pizza/salé/sucré)."""
+    """Alerte du jour (réagit immédiatement: gras saturés, sel, sucres…)."""
     alerts = []
     def over(k_col, name, factor=1.2):
         v = float(today.get(k_col, 0.0) or 0.0)
         t = float(daily_targets.get(_map_target_key(k_col), 0.0) or 0.0)
         if t and v >= factor * t:
-            alerts.append(f"{name} aujourd’hui au-dessus des repères ({v:.1f} vs {t:.1f})")
+            alerts.append(f"{name} aujourd’hui élevé ({v:.1f} vs {t:.1f})")
 
-    # Détections “pizza like” : AG saturés, sel, lipides, énergie (indirect via macro)
     over("AG_saturés_g", "🥓 AG saturés", 1.1)
     over("AG_satures_g", "🥓 AG saturés", 1.1)
-    over("Sel_g", "🧂 Sel", 1.1)
-    over("Sodium_g", "🧂 Sel", 1.1)
-    over("Lipides_g", "🥑 Lipides", 1.2)
-    over("Sucres_g", "🍬 Sucres", 1.2)
+    over("Sel_g",        "🧂 Sel",       1.1)
+    over("Sodium_g",     "🧂 Sel",       1.1)
+    over("Lipides_g",    "🥑 Lipides",   1.2)
+    over("Sucres_g",     "🍬 Sucres",    1.2)
     return {"alerts": alerts[:4]}
-    
+
 # ---------------- Plans d’action ----------------
 def build_actions(diagnostic: Dict) -> Dict[str, List[str]]:
     actions_nutri, actions_limit, lifestyle = [], [], []
@@ -148,14 +146,37 @@ def build_actions(diagnostic: Dict) -> Dict[str, List[str]]:
 
     weekday = dt.date.today().weekday()
     lifestyle_bank = [
-        "🛏️ Vise **7–9 h** de sommeil (heure de coucher régulière).",
-        "🚶 **20–30 min** d’activité modérée (marche active).",
-        "💧 **1,5–2 L** d’eau (citron/menthe).",
+        "🛏️ Vise **7–9 h** de sommeil (coucher régulier).",
+        "🚶 **20–30 min** d’activité modérée.",
+        "💧 **1,5–2 L** d’eau.",
         "🧘 2× **3 min** respiration 5-5.",
         "📵 **Écran off** 45 min avant dormir.",
-        "🌞 **Lumière du matin** (rythme circadien).",
+        "🌞 **Lumière du matin**.",
         "🍽️ **Mastique +** (satiété/digestion).",
     ]
     lifestyle.append(lifestyle_bank[weekday]); lifestyle.append(lifestyle_bank[(weekday+3) % len(lifestyle_bank)])
-
     return {"to_add": actions_nutri[:3], "to_limit": actions_limit[:3], "lifestyle": lifestyle[:2]}
+
+# ---------------- Coach IA+ : besoins -> tags recettes + portion conseillée ----------------
+def needs_from_diagnostic(diagnostic: Dict) -> List[str]:
+    needs = []
+    for label, _ in diagnostic.get("gaps", []):
+        if "Protéines" in label: needs.append("proteines")
+        if "Fibres" in label:    needs.append("fibres")
+        if "Oméga-3 ALA" in label: needs.append("ala")
+        if "Glucides" in label:  needs.append("glucides")
+        if "Lipides" in label:   needs.append("lipides")
+    for label, _, _ in diagnostic.get("limits", []):
+        if "Sucres" in label:    needs.append("fibres")
+        if "AG saturés" in label: needs.append("ala")
+        if "Sel" in label:       needs.append("micros")
+    return list(dict.fromkeys(needs))[:4]
+
+def portion_hint_from_gap(label: str) -> int:
+    """Renvoie une portion conseillée (g) indicative par type de besoin."""
+    if "Protéines" in label: return 150  # ex poulet/tofu
+    if "Fibres" in label:    return 120  # légumineuses/légumes
+    if "Oméga-3 ALA" in label: return 15  # lin moulu/noix
+    if "Glucides" in label:  return 150  # féculents IG bas
+    if "Lipides" in label:   return 10   # huiles/oléagineux
+    return 100

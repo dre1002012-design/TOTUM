@@ -5,7 +5,7 @@ import re, unicodedata
 import datetime as dt
 import plotly.graph_objects as go
 
-# ===== Couleurs (restent cohérentes avec ton ancien visuel) =====
+# ===== Couleurs (cohérentes avec le visuel existant) =====
 COLORS = {
     "brand":    "#ff7f3f",   "brand2":   "#ffb347",
     "ink":      "#0d1b1e",   "muted":    "#5f6b76",
@@ -18,11 +18,12 @@ COLORS = {
     "ok":        "#5cb85c",  "warn":      "#f0ad4e", "bad":"#d9534f",
 }
 
-# ===== Backend existant (on ne change pas tes autres fichiers) =====
+# ===== Backends existants (on ne change pas ces modules) =====
 from calorie_app.core.data import fetch_journal_by_date, fetch_last_date_with_rows
 from calorie_app.core.calc import excel_like_targets
 
-# ===== Petits helpers (identiques à l’esprit de ton app.py) =====
+# ===== Helpers généraux (alignés avec app.py d’origine) =====
+
 def strip_accents(text: str) -> str:
     text = str(text or "")
     return "".join(ch for ch in unicodedata.normalize("NFD", text) if unicodedata.category(ch) != "Mn")
@@ -38,7 +39,7 @@ def round1(x) -> float:
     try: return float(np.round(float(x), 1))
     except Exception: return 0.0
 
-def parse_name_unit(label: str) -> tuple[str,str]:
+def parse_name_unit(label: str) -> tuple[str, str]:
     if label is None: return "", ""
     s = str(label).strip()
     parts = re.split(r"\s*[-–—]\s*", s)
@@ -90,7 +91,7 @@ def drop_parasite_columns(df: pd.DataFrame | None) -> pd.DataFrame | None:
     out = df[cols]
     return out.loc[:, ~(out.isna().all())]
 
-# Unifications (pour retrouver les colonnes même si l’appellation varie)
+# Unifications (retrouver les colonnes même si le libellé varie)
 PREFERRED_NAMES = {
     "energiekcal":"Énergie_kcal", "proteinesg":"Protéines_g", "glucidesg":"Glucides_g", "lipidesg":"Lipides_g",
     "fibresg":"Fibres_g", "agsaturesg":"AG_saturés_g",
@@ -147,13 +148,6 @@ def donut(cons, target, title, color_key="energie", height=210):
     )
     return fig
 
-def get_profile_targets_cached() -> dict:
-    p = st.session_state["profile"]
-    base = excel_like_targets(p)
-    prof = {k: round1(v) for k,v in base.items()}
-    st.session_state["profile_targets"] = prof
-    return prof
-
 # ===== Calcul robuste ALA (oméga-3) =====
 def _find_ala_columns_in(dfcols: list[str]) -> list[str]:
     cols = []
@@ -161,7 +155,6 @@ def _find_ala_columns_in(dfcols: list[str]) -> list[str]:
         ck = canon_key(c)
         if "epa" in ck or "dha" in ck:
             continue
-        # ALA : multiples variantes rencontrées
         if ("ala" in ck and ("omega3" in ck or "w3" in ck)) \
            or ("alpha" in ck and "linolen" in ck) \
            or ck.endswith("alag") or ck.endswith("ala") \
@@ -170,16 +163,13 @@ def _find_ala_columns_in(dfcols: list[str]) -> list[str]:
     return cols
 
 def _ala_consumed_from_day(df: pd.DataFrame, totals_series: pd.Series) -> float:
-    # 1) colonne exacte dans df du jour
     if df is not None and not df.empty and "Acide_alpha-linolénique_W3_ALA_g" in df.columns:
         return float(pd.to_numeric(df["Acide_alpha-linolénique_W3_ALA_g"], errors="coerce").fillna(0.0).sum())
-    # 2) sinon, heuristique sur d’autres libellés possibles dans df
     if df is not None and not df.empty:
         ala_cols = _find_ala_columns_in(df.columns.tolist())
         if ala_cols:
             s = pd.DataFrame(df[ala_cols]).apply(pd.to_numeric, errors="coerce").fillna(0.0)
             return float(s.sum(numeric_only=True).sum())
-    # 3) sinon, on tente dans la série de totaux
     if isinstance(totals_series, pd.Series) and not totals_series.empty:
         cand = _find_ala_columns_in(list(totals_series.index))
         if cand:
@@ -189,7 +179,109 @@ def _ala_consumed_from_day(df: pd.DataFrame, totals_series: pd.Series) -> float:
                                        errors="coerce").fillna(0.0).iloc[0])
     return 0.0
 
-# ===== PAGE =====
+# ===== Micro tables: vitamines/minéraux depuis tes cibles + totaux jour =====
+def build_micro_tables_from_targets_and_totals(targets_micro_df: pd.DataFrame, totals_series: pd.Series):
+    """
+    Prépare deux DataFrames: vitamines et minéraux, colonnes:
+      Nutriment, Objectif, Consommée
+    (Pas de tri ici; le tri se fait dans micro_bar par % de couverture.)
+    """
+    if targets_micro_df is None or targets_micro_df.empty or "Nutriment" not in targets_micro_df.columns:
+        return pd.DataFrame(), pd.DataFrame()
+
+    df = targets_micro_df.copy()
+    if "Objectif" not in df.columns:
+        df["Objectif"] = np.nan
+
+    def consumed_micro(r):
+        name, unit = parse_name_unit(str(r["Nutriment"]))
+        key = f"{name}_{normalize_unit(unit)}".replace(" ","_")
+        if isinstance(totals_series, pd.Series) and key in totals_series.index and pd.notna(totals_series[key]):
+            return float(totals_series[key])
+        for idx in totals_series.index:
+            if canon_key(idx) == canon_key(key):
+                return float(totals_series[idx])
+        return 0.0
+
+    df["Consommée"] = df.apply(consumed_micro, axis=1).astype(float)
+
+    def is_vit(n: str) -> bool:
+        n = strip_accents(str(n)).lower()
+        return n.startswith("vit") or "vitamine" in n
+
+    vit  = df[df["Nutriment"].astype(str).apply(is_vit)].copy()
+    mino = df[~df["Nutriment"].astype(str).apply(is_vit)].copy()
+    return vit, mino
+
+# ===== Graphe barres pour micros: tri du moins couvert → plus couvert =====
+def micro_bar(df: pd.DataFrame, title: str):
+    """
+    Bar chart horizontal trié du moins couvert → au plus couvert.
+    - Lignes sans objectif en bas.
+    - Code couleur: 🟢≥100% / 🟠≥50% / 🔴<50%.
+    """
+    if df.empty:
+        st.info(f"Aucune donnée pour {title.lower()}.")
+        return
+
+    d = df.copy()
+    if "Objectif" not in d.columns:
+        d["Objectif"] = np.nan
+    d["Objectif"] = pd.to_numeric(d["Objectif"], errors="coerce")
+    d["% objectif"] = (d["Consommée"] / d["Objectif"]) * 100.0
+    d["% objectif"] = d["% objectif"].replace([np.inf, -np.inf], np.nan)
+
+    has_goal = d["Objectif"].notna() & (d["Objectif"] > 0)
+    d["_sort_key"] = np.where(has_goal, d["% objectif"], np.inf)
+    d = d.sort_values("_sort_key", ascending=True).drop(columns=["_sort_key"])
+
+    xmax = float(max((d["Objectif"].max(skipna=True), d["Consommée"].max(skipna=True)), default=0.0)) * 1.15 or 1.0
+    height = max(320, int(24 * len(d)) + 110)
+
+    fig = go.Figure()
+    fig.add_bar(
+        y=d["Nutriment"],
+        x=d["Objectif"],
+        name="Objectif",
+        orientation="h",
+        marker_color=COLORS["objectif"],
+        opacity=0.30,
+        hovertemplate="Objectif: %{x:.1f}<extra></extra>",
+    )
+    fig.add_bar(
+        y=d["Nutriment"],
+        x=d["Consommée"],
+        name="Ingéré",
+        orientation="h",
+        marker_color=[pct_color(v) for v in d["% objectif"]],
+        text=[
+            f"{c:.1f}"
+            + (f"/{o:.1f}" if pd.notna(o) and o > 0 else "")
+            + (f" ({p:.0f}%)" if pd.notna(p) else "")
+            for c, o, p in zip(d["Consommée"], d["Objectif"], d["% objectif"])
+        ],
+        textposition="outside",
+        cliponaxis=False,
+        hovertemplate="Ingéré: %{x:.1f}<extra></extra>",
+    )
+
+    fig.update_layout(
+        barmode="overlay",
+        title=title,
+        xaxis_title="",
+        yaxis_title="",
+        xaxis=dict(range=[0, xmax]),
+        height=height,
+        margin=dict(l=6, r=6, t=36, b=8),
+        legend=dict(orientation="h", y=-0.18),
+        font=dict(size=13),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+    )
+    st.plotly_chart(fig, config={"displaylogo": False, "responsive": True, "staticPlot": True}, use_container_width=True)
+    st.caption("🟢 **Objectif atteint**  •  🟠 **En cours**  •  🔴 **Insuffisant**")
+
+# ===== PAGE BILAN =====
 def render_bilan_tab():
     st.subheader("📊 Bilan")
 
@@ -209,12 +301,12 @@ def render_bilan_tab():
     df_day = fetch_journal_by_date(date_bilan.isoformat())
     totals = unify_totals_for_date(date_bilan.isoformat())
 
+    # 2) Cibles (logique Excel-like d’origine)
     xlt = excel_like_targets(st.session_state.get("profile", {}))
-    targets_macro = st.session_state.get("targets_macro", pd.DataFrame()).copy()
     targets_micro = st.session_state.get("targets_micro", pd.DataFrame()).copy()
 
-    # 2) Donuts — 3 paragraphes comme avant
-    # 2.1 Macro principaux
+    # 3) Donuts — 3 paragraphes comme avant
+    # 3.1 Macros principaux
     p = float(totals.get("Protéines_g", totals.get("Proteines_g", 0.0)) or 0.0)
     g = float(totals.get("Glucides_g", 0.0) or 0.0)
     l = float(totals.get("Lipides_g", 0.0) or 0.0)
@@ -229,7 +321,7 @@ def render_bilan_tab():
 
     st.divider()
 
-    # 2.2 Acides gras essentiels (incl. ALA robuste)
+    # 3.2 Acides gras essentiels (incl. ALA robuste)
     ala = _ala_consumed_from_day(df_day, totals)
     epa = float(totals.get("EPA_g", 0.0))
     dha = float(totals.get("DHA_g", 0.0))
@@ -245,97 +337,24 @@ def render_bilan_tab():
 
     st.divider()
 
-    # 2.3 À surveiller (Sucres, AG saturés, Sel) — réclamé
-    sucres   = float(totals.get("Sucres_g", 0.0))
-    ag_sat   = float(totals.get("AG_saturés_g", totals.get("AG_satures_g", 0.0)))
-    sel      = float(totals.get("Sel_g", totals.get("Sodium_g", 0.0)))
+    # 3.3 À surveiller (Sucres / AG saturés / Sel)
+    sucres = float(totals.get("Sucres_g", 0.0))
+    ag_sat = float(totals.get("AG_saturés_g", totals.get("AG_satures_g", 0.0)))
+    sel    = float(totals.get("Sel_g", totals.get("Sodium_g", 0.0)))
     st.markdown("### ⚠️ À surveiller")
     c1, c2, c3 = st.columns(3)
     with c1: st.plotly_chart(donut(sucres, xlt.get("sucres_g", 0.0), "Sucres (g)"), use_container_width=True)
     with c2: st.plotly_chart(donut(ag_sat, xlt.get("agsatures_g", 0.0), "AG saturés (g)"), use_container_width=True)
     with c3: st.plotly_chart(donut(sel,    xlt.get("sel_g", 6.0), "Sel (g)"), use_container_width=True)
-
-    # Légende couleur (objectif atteint / en cours / insuffisant)
     st.caption("🟢 **Objectif atteint**  •  🟠 **En cours**  •  🔴 **Insuffisant**")
 
     st.divider()
 
-    # 3) VITAMINES & MINÉRAUX — deux sections séparées, graphiques triés
-    def build_micro_tables_from_targets_and_totals(targets_micro_df: pd.DataFrame, totals_series: pd.Series):
-        if targets_micro_df is None or targets_micro_df.empty or "Nutriment" not in targets_micro_df.columns:
-            return pd.DataFrame(), pd.DataFrame()
-
-        df = targets_micro_df.copy()
-        if "Objectif" not in df.columns:
-            df["Objectif"] = np.nan
-
-        def consumed_micro(r):
-            name, unit = parse_name_unit(str(r["Nutriment"]))
-            key = f"{name}_{normalize_unit(unit)}".replace(" ","_")
-            # clé exacte
-            if isinstance(totals_series, pd.Series) and key in totals_series.index and pd.notna(totals_series[key]):
-                return float(totals_series[key])
-            # sinon, matching canonique
-            for idx in totals_series.index:
-                if canon_key(idx) == canon_key(key):
-                    return float(totals_series[idx])
-            return 0.0
-
-        df["Consommée"] = df.apply(consumed_micro, axis=1).astype(float)
-        # Séparation vit / minéraux
-        def is_vit(n: str) -> bool:
-            n = strip_accents(str(n)).lower()
-            return n.startswith("vit") or "vitamine" in n
-        vit = df[df["Nutriment"].astype(str).apply(is_vit)].copy()
-        mino= df[~df["Nutriment"].astype(str).apply(is_vit)].copy()
-
-        # Tri demandé : du plus consommé au moins consommé (Indépendamment de l’objectif)
-        vit = vit.sort_values("Consommée", ascending=False)
-        mino= mino.sort_values("Consommée", ascending=False)
-        return vit, mino
-
+    # 4) VITAMINES & MINÉRAUX — deux sections séparées (tri auto par % objectif)
     vit, mino = build_micro_tables_from_targets_and_totals(targets_micro, totals)
 
-    def micro_bar(df: pd.DataFrame, title: str):
-        if df.empty:
-            st.info(f"Aucune donnée pour {title.lower()}.")
-            return
-        d = df.copy()
-        # couverture si objectif dispo
-        if "Objectif" not in d.columns:
-            d["Objectif"] = np.nan
-        d["% objectif"] = (d["Consommée"] / pd.to_numeric(d["Objectif"], errors="coerce")) * 100.0
-        d["% objectif"] = d["% objectif"].replace([np.inf,-np.inf], np.nan)
-
-        xmax = float(max((pd.to_numeric(d["Objectif"], errors="coerce").max(skipna=True),
-                          d["Consommée"].max(skipna=True)), default=0.0)) * 1.15 or 1.0
-        height = max(320, int(24*len(d)) + 110)
-
-        fig = go.Figure()
-        # Objectif (fond gris)
-        fig.add_bar(y=d["Nutriment"], x=pd.to_numeric(d["Objectif"], errors="coerce"),
-                    name="Objectif", orientation="h",
-                    marker_color=COLORS["objectif"], opacity=0.30,
-                    hovertemplate="Objectif: %{x:.1f}<extra></extra>")
-        # Ingéré (barre colorée avec code couleur %)
-        fig.add_bar(y=d["Nutriment"], x=d["Consommée"],
-                    name="Ingéré", orientation="h",
-                    marker_color=[pct_color(v) for v in d["% objectif"]],
-                    text=[f"{c:.1f}" + (f"/{o:.1f}" if pd.notna(o) else "") +
-                          (f" ({p:.0f}%)" if pd.notna(p) else "")
-                          for c,o,p in zip(d["Consommée"], d["Objectif"], d["% objectif"])],
-                    textposition="outside", cliponaxis=False,
-                    hovertemplate="Ingéré: %{x:.1f}<extra></extra>")
-        fig.update_layout(barmode="overlay", title=title, xaxis_title="", yaxis_title="",
-                          xaxis=dict(range=[0, xmax]),
-                          height=height, margin=dict(l=6,r=6,t=36,b=8),
-                          legend=dict(orientation="h", y=-0.18),
-                          font=dict(size=13),
-                          paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
-        st.plotly_chart(fig, config={"displaylogo":False,"responsive":True,"staticPlot":True}, use_container_width=True)
-
-    # Sections séparées + tri par consommé (desc)
     st.markdown("### 🍊 Vitamines")
     micro_bar(vit,  "Vitamines — objectif vs ingéré")
+
     st.markdown("### 🧂 Minéraux")
     micro_bar(mino, "Minéraux — objectif vs ingéré")

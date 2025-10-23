@@ -4,8 +4,6 @@
 # conservation de la logique existante (calculs, sqlite, import/export, ALA, ...)
 
 
-
-
 from __future__ import annotations
 import os, io, re, json, sqlite3, unicodedata, datetime as dt, base64, random, math
 from pathlib import Path
@@ -22,8 +20,7 @@ from calorie_app.tabs.journal_tab import render_journal_tab
 from calorie_app.tabs.bilan_tab import render_bilan_tab
 from calorie_app.tabs.conseil_tab import render_conseil_tab
 from calorie_app.core.data import load_profile
-
-
+from calorie_app.tabs.alimentation_tab import render_alimentation_tab
 
 
 VERSION = "v2025-10-07-v7-logo-centered-white-consels-journal-search-optimized"
@@ -1411,23 +1408,22 @@ def render_conseils_page():
         if not vit.empty:  show_cards(vit,  "🍊 Vitamines — rôles & bénéfices", "🍊")
         if not mino.empty: show_cards(mino, "🧂 Minéraux — rôles & bénéfices",   "🧂")
 
-
-
-
 # ===================== Tabs (split) =====================
-tab_profile, tab_journal, tab_bilan, tab_conseil = st.tabs(
-    ["👤 Profil", "🧾 Journal", "📊 Bilan", "💡 Conseils"]
+tab_profile, tab_journal, tab_bilan, tab_alimentation = st.tabs(
+    ["👤 Profil", "🧾 Journal", "📊 Bilan", "💡 Alimentation"]
 )
+
 with tab_profile:
     render_profile_tab(load_profile)
+
 with tab_journal:
     render_journal_tab()
+
 with tab_bilan:
     render_bilan_tab()
-with tab_conseil:
-    render_conseil_tab()
 
-
+with tab_alimentation:
+    render_alimentation_tab()
 
 
 

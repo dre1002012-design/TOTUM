@@ -1,7 +1,6 @@
 """
 core/style.py — thèmes, couleurs et fonctions CSS (visuel seulement)
 """
-
 import streamlit as st
 
 COLORS = {
@@ -17,7 +16,7 @@ COLORS = {
 }
 
 def apply_mobile_css_and_topbar(logo_b64: str | None):
-    """Applique le thème clair et le bandeau supérieur (même rendu que ton app actuelle)."""
+    """Bandeau et reset simple pour un rendu propre/mobile."""
     st.markdown(f"""
     <style>
     [data-testid="stToolbar"], [data-testid="stDecoration"], [data-testid="stStatusWidget"], header, footer {{
@@ -50,52 +49,41 @@ def set_favicon_from_logo(logo_b64: str | None):
       document.head.appendChild(link);
     </script>
     """, unsafe_allow_html=True)
+
 def apply_journal_style():
-    """Style supplémentaire pour l’onglet Journal (mobile-friendly)."""
+    """Style supplémentaire pour l’onglet Journal (mobile-friendly & brand)."""
     st.markdown(
         """
         <style>
-        /* --- Layout général --- */
-        .stApp { font-family: 'Inter', sans-serif; }
-        .block-container { padding-top: 0.8rem; padding-bottom: 3rem; }
+        .stApp { font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Inter, sans-serif; }
+        .block-container { padding-top: 0.8rem; padding-bottom: 2.2rem; }
 
-        /* --- Titres de sections --- */
-        h4, h5, h6 {
-            color: #ff7f3f;
-            font-weight: 600;
-        }
+        /* Titres */
+        h3, h4, h5, h6 { color: #ff7f3f; font-weight: 650; letter-spacing: .1px; }
 
-        /* --- Boutons principaux --- */
-        button[kind="primary"], .stButton>button {
+        /* Buttons */
+        .stButton > button {
             background-color: #ff7f3f !important;
-            color: white !important;
+            color: #fff !important;
             border: none !important;
-            border-radius: 0.6rem !important;
+            border-radius: 10px !important;
             font-weight: 600 !important;
+            padding: .5rem .9rem !important;
         }
+        .stButton > button:hover { filter: brightness(0.95); }
 
-        /* --- Metrics en tête --- */
-        [data-testid="stMetricLabel"] {
-            font-weight: 600;
-            color: #444;
-        }
-        [data-testid="stMetricDelta"] {
-            font-size: 0.8rem;
-            opacity: 0.7;
-        }
-
-        /* --- Inputs compacts pour mobile --- */
-        input[type="number"], select, textarea {
-            border-radius: 0.4rem !important;
+        /* Inputs compacts */
+        input[type="number"], select, textarea, .stTextInput input {
+            border-radius: 8px !important;
             font-size: 0.95rem !important;
         }
 
-        /* --- Lignes du journal --- */
-        div[data-testid="stDataFrame"] table {
-            font-size: 0.9rem !important;
-        }
+        /* Metrics plus lisibles */
+        [data-testid="stMetricLabel"] { font-weight: 600; color: #333; }
+        [data-testid="stMetricDelta"] { font-size: 0.8rem; opacity: 0.7; }
 
-        /* --- Dividers allégés --- */
+        /* Dataframes plus denses */
+        div[data-testid="stDataFrame"] table { font-size: 0.92rem !important; }
         hr { margin: 0.8rem 0 !important; }
         </style>
         """,

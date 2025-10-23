@@ -59,5 +59,7 @@ def load_foods() -> pd.DataFrame:
             df[c] = pd.NA
 
     # Normalisation douce
-    df["nom"] = df["nom"].astype(str)
+        df["nom"] = df["nom"].astype(str)
+    # Suppression automatique des colonnes dupliquées
+    df = df.loc[:, ~df.columns.duplicated()].copy()
     return df
