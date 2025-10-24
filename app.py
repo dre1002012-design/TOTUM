@@ -43,23 +43,29 @@ DB_PATH = os.path.join(os.getcwd(), "totum.db")
 
 
 
-# --- Mobile compact mode (CSS global) ---
+# --- Mobile-only compact skin (pure CSS, no logic change) ---
 import streamlit as st
 st.markdown("""
 <style>
+/* conteneur plus étroit */
 main .block-container { padding-top: .5rem; padding-bottom: 3rem; max-width: 1100px; }
 @media (max-width: 640px) {
   main .block-container { padding-left: .6rem; padding-right: .6rem; }
+  /* métriques + titres compacts */
   .stMetric { padding: .1rem .2rem; }
   .stMetric label { font-size: .8rem !important; }
   .stMetric [data-testid="stMetricValue"] { font-size: 1rem !important; }
+  /* tableaux / inputs compacts */
   .stDataFrame { font-size: .85rem; }
   .stButton button { padding: .28rem .6rem; font-size: .9rem; }
   .stTextInput input, .stNumberInput input, .stSelectbox select { font-size: .95rem; }
+  /* colonnes des donuts : laisse Streamlit placer 3-4 selon largeur */
 }
+/* expanders un peu plus serrés */
 details[data-testid="stExpander"] > summary { padding: .25rem .4rem; }
 </style>
 """, unsafe_allow_html=True)
+
 
 
 
