@@ -2,18 +2,19 @@
 import streamlit as st
 import pandas as pd
 import matplotlib.pyplot as plt
-import numpy as np
 import datetime as dt
 
 from calorie_app.core.data import fetch_journal_by_date
 from calorie_app.core.calc import excel_like_targets
+
+DONUT_SIZE = (1.6, 1.6)  # plus petit, lisible smartphone
 
 # ---------- Utils ----------
 def _sum_numeric(df: pd.DataFrame, drop_cols=None) -> pd.Series:
     if df is None or df.empty:
         return pd.Series(dtype=float)
     drop_cols = set(drop_cols or [])
-    num = df.drop(columns=[c for c in drop_cols if c in df.columns], errors="ignore")
+    num = df.drop(columns=[c for c in df.columns if c in drop_cols], errors="ignore")
     num = num.apply(pd.to_numeric, errors="coerce")
     return num.sum(numeric_only=True)
 
@@ -23,7 +24,7 @@ def _energy_from_series(s: pd.Series) -> float:
     l = float(s.get("Lipides_g", 0) or 0)
     return p*4 + g*4 + l*9
 
-def _donut(value: float, goal: float, title: str, color="#FF7F3F", size=(2.0,2.0)):
+def _donut(value: float, goal: float, title: str, color="#FF7F3F", size=DONUT_SIZE):
     fig, ax = plt.subplots(figsize=size)
     v = max(0.0, float(value or 0.0))
     g = max(0.0001, float(goal or 0.0001))
@@ -36,7 +37,7 @@ def _donut(value: float, goal: float, title: str, color="#FF7F3F", size=(2.0,2.0
     plt.tight_layout()
     return fig
 
-def _row_of_donuts(items, size=(2.0,2.0)):
+def _row_of_donuts(items, size=DONUT_SIZE):
     cols = st.columns(4)
     for i, (title, value, goal, color) in enumerate(items[:4]):
         with cols[i]:
@@ -56,7 +57,7 @@ def _pct(value, goal):
     g = float(goal or 0.0)
     return (v/g*100.0) if g>0 else 0.0
 
-# ---------- Bilan ----------
+# ---------- Main ----------
 def render_bilan_tab():
     st.subheader("📊 Bilan")
 
@@ -86,9 +87,9 @@ def render_bilan_tab():
         ("Protéines (g)", p, p_t, "#4CAF50"),
         ("Glucides (g)", g, g_t, "#2196F3"),
         ("Lipides (g)",  l, l_t, "#9C27B0"),
-    ], size=(1.8,1.8))
+    ])
 
-    # ---- AG essentiels (toutes clés tolérées, ALA corrigé)
+    # ---- AG essentiels (tolère différentes colonnes, ALA corrigé)
     ala = float(totals.get("Omega3_ALA_g", totals.get("ALA_g", totals.get("AG_omega3_ALA_g", 0))) or 0)
     ala_t = float(targets.get("omega3_ala_g", targets.get("ALA_g_obj", 2.0)) or 2.0)
     epa_dha = float(totals.get("Omega3_EPA_DHA_g", totals.get("EPA_DHA_g", 0)) or 0)
@@ -102,7 +103,7 @@ def render_bilan_tab():
         ("EPA+DHA (g)", epa_dha, epa_dha_t, "#00BCD4"),
         ("ω-6 LA (g)", la_omega6, la_omega6_t, "#FFC107"),
         ("Lipides (g)", l, l_t, "#9C27B0"),
-    ], size=(1.8,1.8))
+    ])
 
     # ---- À surveiller (si présents)
     sugars = totals.get("Sucres_g", totals.get("sugar_g", None))
@@ -120,35 +121,24 @@ def render_bilan_tab():
         to_watch.append(("Sodium (mg)", float(sodium or 0), sod_t, "#795548"))
     if to_watch:
         st.markdown("#### ⚠️ À surveiller")
-        _row_of_donuts(to_watch, size=(1.8,1.8))
+        _row_of_donuts(to_watch)
 
-    # ---- Vitamines & Minéraux (exhaustif, tri auto)
-    # On scinde : vitamines d'abord (nom contient 'vit' ou prefixe 'vit_'), puis minéraux (_mg/_mcg hors 'vit')
+    # ---- Vitamines (tri auto) ----
     cols_all = list(totals.index)
     vit_cols = [c for c in cols_all if ("vit" in c.lower()) or c.lower().startswith("vit_")]
-    mineral_cols = [c for c in cols_all if (c.endswith("_mg") or c.endswith("_mcg")) and (c not in vit_cols)]
-
-    def _render_micro_section(title, cols):
-        if not cols:
-            return
-        st.markdown(f"#### {title} (triés par % d’objectif)")
+    if vit_cols:
+        st.markdown("#### 🍊 Vitamines (triées par % d’objectif)")
         data = []
-        for c in cols:
+        for c in vit_cols:
             val = float(totals.get(c, 0) or 0)
             tgt_key = f"{c}_target"
             goal = float((targets.get(tgt_key) or 0))
             if goal <= 0:
-                # repère par défaut prudent si non fourni
                 goal = 400.0 if c.endswith("_mcg") else 1000.0
             data.append((c, val, goal, _pct(val, goal)))
-        if not data:
-            return
         dfm = pd.DataFrame(data, columns=["nutriment","val","obj","cov"]).sort_values("cov", ascending=False)
-
-        # rendu compact : par lignes de 4, barres de progression
-        top = dfm  # montre tout, mais compact
-        for i in range(0, len(top), 4):
-            row = top.iloc[i:i+4]
+        for i in range(0, len(dfm), 4):
+            row = dfm.iloc[i:i+4]
             cols = st.columns(len(row))
             for j, (_, r) in enumerate(row.iterrows()):
                 with cols[j]:
@@ -156,8 +146,27 @@ def render_bilan_tab():
                     st.progress(min(int(cov), 100), text=r["nutriment"])
                     st.caption(f"{r['val']:.0f}/{r['obj']:.0f}  ({cov:.0f}%)")
 
-    _render_micro_section("🍊 Vitamines", vit_cols)
-    _render_micro_section("🧱 Minéraux", mineral_cols)
+    # ---- Minéraux (tri auto) ----
+    mineral_cols = [c for c in cols_all if (c.endswith("_mg") or c.endswith("_mcg")) and (c not in vit_cols)]
+    if mineral_cols:
+        st.markdown("#### 🧱 Minéraux (triés par % d’objectif)")
+        data = []
+        for c in mineral_cols:
+            val = float(totals.get(c, 0) or 0)
+            tgt_key = f"{c}_target"
+            goal = float((targets.get(tgt_key) or 0))
+            if goal <= 0:
+                goal = 400.0 if c.endswith("_mcg") else 1000.0
+            data.append((c, val, goal, _pct(val, goal)))
+        dfm = pd.DataFrame(data, columns=["nutriment","val","obj","cov"]).sort_values("cov", ascending=False)
+        for i in range(0, len(dfm), 4):
+            row = dfm.iloc[i:i+4]
+            cols = st.columns(len(row))
+            for j, (_, r) in enumerate(row.iterrows()):
+                with cols[j]:
+                    cov = min(max(r["cov"], 0), 200)
+                    st.progress(min(int(cov), 100), text=r["nutriment"])
+                    st.caption(f"{r['val']:.0f}/{r['obj']:.0f}  ({cov:.0f}%)")
 
     with st.expander("Légende"):
         st.write("🟢 objectif atteint • 🟠 en cours • 🔴 insuffisant — les anneaux montrent la part de l’objectif atteinte.")
