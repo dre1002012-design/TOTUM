@@ -43,6 +43,25 @@ DB_PATH = os.path.join(os.getcwd(), "totum.db")
 
 
 
+# --- Mobile compact mode (CSS global) ---
+import streamlit as st
+st.markdown("""
+<style>
+main .block-container { padding-top: .5rem; padding-bottom: 3rem; max-width: 1100px; }
+@media (max-width: 640px) {
+  main .block-container { padding-left: .6rem; padding-right: .6rem; }
+  .stMetric { padding: .1rem .2rem; }
+  .stMetric label { font-size: .8rem !important; }
+  .stMetric [data-testid="stMetricValue"] { font-size: 1rem !important; }
+  .stDataFrame { font-size: .85rem; }
+  .stButton button { padding: .28rem .6rem; font-size: .9rem; }
+  .stTextInput input, .stNumberInput input, .stSelectbox select { font-size: .95rem; }
+}
+details[data-testid="stExpander"] > summary { padding: .25rem .4rem; }
+</style>
+""", unsafe_allow_html=True)
+
+
 
 # === Assets packagés
 ASSETS_DIR = Path(__file__).parent / "assets"
