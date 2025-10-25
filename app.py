@@ -28,13 +28,23 @@ VERSION = "v2025-10-07-v7-logo-centered-white-consels-journal-search-optimized"
 
 
 
-# app.py
-import os
+# --- Page config (layout wide, sidebar fermée) ---
+st.set_page_config(
+    page_title="Totum — suivi nutritionnel",
+    page_icon="🥗",
+    layout="wide",
+    initial_sidebar_state="collapsed",
+)
+
+
+
+
+DB_PATH = os.path.join(os.getcwd(), "totum.db")
+
+
+
+# --- Mobile compact mode (CSS global) ---
 import streamlit as st
-
-st.set_page_config(page_title="TOTUM", page_icon="🥗", layout="wide")
-
-# --- Mobile-only compact skin (pure CSS, no logic change) ---
 st.markdown("""
 <style>
 main .block-container { padding-top: .5rem; padding-bottom: 3rem; max-width: 1100px; }
@@ -50,39 +60,6 @@ main .block-container { padding-top: .5rem; padding-bottom: 3rem; max-width: 110
 details[data-testid="stExpander"] > summary { padding: .25rem .4rem; }
 </style>
 """, unsafe_allow_html=True)
-
-# --- Admin flag (pour masquer Import/Export/Diagnostic au client) ---
-ADMIN_MODE = os.environ.get("TOTEM_ADMIN", "0") == "1"
-st.session_state["ADMIN_MODE"] = ADMIN_MODE
-
-# ====== Imports de tes onglets (inchangés côté logique) ======
-from calorie_app.tabs.profile_tab import render_profile_tab
-from calorie_app.tabs.journal_tab import render_journal_tab
-from calorie_app.tabs.bilan_tab import render_bilan_tab
-from calorie_app.tabs.alimentation_tab import render_alimentation_tab
-
-# ====== Barre de titre / logo (garde ce que tu avais) ======
-st.title("TOTUM — compteur & coach nutrition")
-
-# ===================== Tabs =====================
-tab_profile, tab_journal, tab_bilan, tab_alimentation = st.tabs(
-    ["👤 Profil", "🧾 Journal", "📊 Bilan", "💡 Alimentation"]
-)
-
-with tab_profile:
-    # garde ta logique existante (profil -> objectifs)
-    render_profile_tab()
-
-with tab_journal:
-    render_journal_tab()
-
-with tab_bilan:
-    render_bilan_tab()
-
-with tab_alimentation:
-    render_alimentation_tab()
-
-
 
 
 
