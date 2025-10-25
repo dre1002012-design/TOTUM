@@ -1,8 +1,21 @@
+# Python
 __pycache__/
 *.pyc
-totum.db
-.env
 .venv/
 venv/
 
-backup_untracked/
+# Données locales lourdes/sensibles
+assets/TOTUM-Suivi nutritionnel.xlsx
+assets/*.parquet
+assets/*.db
+*.sqlite
+
+# Config/Secrets locaux
+.streamlit/secrets.toml
+.env
+.env.*
+
+# OS/IDE
+.DS_Store
+Thumbs.db
+.vscode/
